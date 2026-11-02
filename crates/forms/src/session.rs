@@ -84,6 +84,8 @@ pub enum RowKind {
     Number,
     /// A text question.
     Text,
+    /// The row that returns to the previous page, for a front end without a Back key.
+    Back,
 }
 
 /// An open value editor.
@@ -155,6 +157,12 @@ struct Entry {
     help: String,
 }
 
+/// The `source` of the Back row; no form item has this index.
+const BACK_ROW: usize = usize::MAX;
+
+/// The prompt of the Back row. Plain ASCII, so a bitmap fallback font draws it.
+const BACK_PROMPT: &str = "< Back";
+
 /// Navigation and editing state. Values remain owned by the provider.
 ///
 /// # Examples
@@ -168,6 +176,10 @@ pub struct Session<H> {
     root: Option<usize>,
     editor: Option<(usize, Editor)>,
     message: Option<String>,
+    /// Pages at the bottom of the stack that Back does not pop (see [`Session::enter`]).
+    base: usize,
+    /// Every page except the formset list ends with a Back row.
+    back_row: bool,
 }
 
 impl<H: Copy + Eq> Session<H> {
@@ -186,7 +198,57 @@ impl<H: Copy + Eq> Session<H> {
             root: None,
             editor: None,
             message: None,
+            base: 0,
+            back_row: true,
         }
+    }
+
+    /// Chooses whether pages end with a Back row. The default is `true`.
+    ///
+    /// A front end with three keys (for example a phone with volume and power
+    /// keys) has no Back key, so it reaches the previous page through this row.
+    /// A front end with an Esc key may turn the row off.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let _session = forms::Session::<u32>::new(Vec::new()).with_back_row(false);
+    /// ```
+    pub fn with_back_row(mut self, back_row: bool) -> Self {
+        self.back_row = back_row;
+        self
+    }
+
+    /// Opens the entry form of the formset with this GUID and pins it.
+    ///
+    /// Back on the pinned form returns [`Event::Exit`] instead of the formset
+    /// list, as `FormBrowser2.SendForm` does for one formset. Returns `false`
+    /// and changes nothing when no formset with forms has this GUID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut session = forms::Session::<u32>::new(Vec::new());
+    /// assert!(!session.enter(&[0x11; 16]));
+    /// ```
+    pub fn enter(&mut self, guid: &Guid) -> bool {
+        let Some(form) = self
+            .sets
+            .iter()
+            .find(|(_, set)| set.guid == *guid)
+            .and_then(|(_, set)| set.forms.first())
+        else {
+            return false;
+        };
+        self.pages = alloc::vec![Page {
+            guid: *guid,
+            form: form.id,
+            selected: None,
+        }];
+        self.base = 1;
+        self.editor = None;
+        self.message = None;
+        true
     }
 
     /// Replaces published forms. Keeps surviving pages and their selection.
@@ -212,6 +274,7 @@ impl<H: Copy + Eq> Session<H> {
             })
             .count();
         self.pages.truncate(valid);
+        self.base = self.base.min(self.pages.len());
         self.sets = sets;
         self.editor = None;
     }
@@ -231,8 +294,10 @@ impl<H: Copy + Eq> Session<H> {
             .unwrap_or_default();
         let mut path = Vec::new();
         let mut title = String::from("Formsets");
-        for page in &self.pages {
-            path.push(title);
+        for (index, page) in self.pages.iter().enumerate() {
+            if index >= self.base {
+                path.push(title);
+            }
             title = self
                 .sets
                 .iter()
@@ -263,12 +328,7 @@ impl<H: Copy + Eq> Session<H> {
             return self.edit(input, provider);
         }
         if input == Input::Back {
-            self.message = None;
-            return if self.pages.pop().is_some() {
-                Event::Changed
-            } else {
-                Event::Exit
-            };
+            return self.back();
         }
         let entries = self.entries(provider);
         self.repair(&entries);
@@ -301,6 +361,9 @@ impl<H: Copy + Eq> Session<H> {
         let Some(source) = self.selection() else {
             return Event::None;
         };
+        if source == BACK_ROW {
+            return self.back();
+        }
         if self.pages.is_empty() {
             let set = &self.sets[source].1;
             if let Some(form) = set.forms.first() {
@@ -393,6 +456,16 @@ impl<H: Copy + Eq> Session<H> {
         Event::Changed
     }
 
+    /// Pops one page; at the formset list or a pinned form, the session exits.
+    fn back(&mut self) -> Event {
+        self.message = None;
+        if self.pages.len() > self.base {
+            self.pages.pop();
+            Event::Changed
+        } else {
+            Event::Exit
+        }
+    }
     fn selection(&self) -> Option<usize> {
         self.pages.last().map_or(self.root, |p| p.selected)
     }
@@ -443,7 +516,8 @@ impl<H: Copy + Eq> Session<H> {
             .find(|s| s.1.guid == page.guid)
             .expect("page formset exists");
         let form = set.form(page.form).expect("page form exists");
-        form.items
+        let mut entries: Vec<Entry> = form
+            .items
             .iter()
             .enumerate()
             .filter_map(|(source, item)| {
@@ -507,7 +581,21 @@ impl<H: Copy + Eq> Session<H> {
                     help,
                 })
             })
-            .collect()
+            .collect();
+        if self.back_row {
+            entries.push(Entry {
+                source: BACK_ROW,
+                row: Row {
+                    prompt: String::from(BACK_PROMPT),
+                    value: String::new(),
+                    kind: RowKind::Back,
+                    enabled: true,
+                    uncertain: false,
+                },
+                help: String::from("Return to the previous page."),
+            });
+        }
+        entries
     }
     fn failure(&mut self, error: Error) -> Event {
         self.message = Some(error.reason.clone());
@@ -929,8 +1017,9 @@ mod tests {
         )
     }
 
+    /// The test page without the Back row, so row indices match its items.
     fn session() -> Session<u32> {
-        Session::new(vec![(7, page())])
+        Session::new(vec![(7, page())]).with_back_row(false)
     }
 
     /// Moves to the page of `page()` and returns the session.
@@ -1004,7 +1093,7 @@ mod tests {
                 ],
             )],
         );
-        let mut session = Session::new(vec![(1, set)]);
+        let mut session = Session::new(vec![(1, set)]).with_back_row(false);
         let mut memory = Memory::default();
         session.input(Input::Enter, &mut memory);
         let view = session.view(&mut memory);
@@ -1209,7 +1298,7 @@ mod tests {
                 ],
             )],
         );
-        let mut session = Session::new(vec![(1, set)]);
+        let mut session = Session::new(vec![(1, set)]).with_back_row(false);
         let mut memory = Memory::default();
         session.input(Input::Enter, &mut memory);
         assert_eq!(session.view(&mut memory).rows.len(), 2);
@@ -1236,7 +1325,7 @@ mod tests {
             "Uncertain",
             vec![form(1, "Uncertain", vec![dependent])],
         );
-        let mut session = Session::new(vec![(1, set)]);
+        let mut session = Session::new(vec![(1, set)]).with_back_row(false);
         let mut memory = Memory::default();
         session.input(Input::Enter, &mut memory);
         let view = session.view(&mut memory);
@@ -1282,7 +1371,7 @@ mod tests {
                 ),
             ],
         );
-        let mut session = Session::new(vec![(1, set.clone())]);
+        let mut session = Session::new(vec![(1, set.clone())]).with_back_row(false);
         let mut memory = Memory::default();
         session.input(Input::Enter, &mut memory);
         assert_eq!(session.view(&mut memory).title, "Main");
@@ -1300,5 +1389,46 @@ mod tests {
             formset(0x60, "Other", vec![form(1, "Other", Vec::new())]),
         )]);
         assert_eq!(session.view(&mut memory).title, "Formsets");
+    }
+
+    /// Presses Down until the selection stops moving.
+    fn to_last(session: &mut Session<u32>, memory: &mut Memory) {
+        while session.input(Input::Down, memory) == Event::Changed {}
+    }
+
+    #[test]
+    fn back_row_ends_each_page_and_returns_to_the_previous_page() {
+        let mut memory = Memory::default();
+        let mut session = Session::new(vec![(7, page())]);
+        let root = session.view(&mut memory);
+        assert!(root.rows.iter().all(|row| row.kind != RowKind::Back));
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        let view = session.view(&mut memory);
+        assert_eq!(view.rows.last().map(|row| row.kind), Some(RowKind::Back));
+        // The first real item keeps the default selection.
+        assert_ne!(view.selected, Some(view.rows.len() - 1));
+        to_last(&mut session, &mut memory);
+        let view = session.view(&mut memory);
+        assert_eq!(view.selected, Some(view.rows.len() - 1));
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).title, "Formsets");
+        assert!(memory.writes.is_empty());
+    }
+
+    #[test]
+    fn entered_formset_is_pinned_and_back_exits() {
+        let mut memory = Memory::default();
+        let other = formset(0x20, "Other", vec![form(1, "Other", Vec::new())]);
+        let mut session = Session::new(vec![(1, other), (7, page())]);
+        assert!(!session.enter(&[0x99; 16]));
+        assert_eq!(session.view(&mut memory).title, "Formsets");
+        assert!(session.enter(&[0x10; 16]));
+        let view = session.view(&mut memory);
+        assert_eq!(view.title, "Main");
+        assert!(view.path.is_empty());
+        assert_eq!(session.input(Input::Back, &mut memory), Event::Exit);
+        // The Back row of the pinned form exits too.
+        to_last(&mut session, &mut memory);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Exit);
     }
 }

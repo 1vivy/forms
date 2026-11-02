@@ -80,7 +80,7 @@ impl Theme {
             RowKind::FormSet => self.link,
             RowKind::Heading => self.heading,
             RowKind::Info => self.info,
-            RowKind::Link => self.link,
+            RowKind::Link | RowKind::Back => self.link,
             RowKind::Action | RowKind::Toggle | RowKind::Choice => self.foreground,
             RowKind::Number | RowKind::Text => self.foreground,
         };

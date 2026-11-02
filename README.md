@@ -25,6 +25,12 @@ The engine has no UEFI or HII dependency. A Linux program uses it alone.
 Dependency rule: the engine never depends on the HII layer, and `ratatui-gop`
 does not depend on `forms`.
 
+`forms::Session` ends every page with a `< Back` row, so a front end with only
+three keys (a phone: volume up, volume down, power) can return to the previous
+page; `with_back_row(false)` removes it for a front end with an Esc key.
+`Session::enter(guid)` opens one formset and pins it, as `FormBrowser2.SendForm`
+does: Back on its entry form ends the session instead of showing the list.
+
 | EDK II component | Equivalent here |
 | --- | --- |
 | `UefiInternalFormRepresentation.h`, `UefiHii.h` | `hii-abi` |
