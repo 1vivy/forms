@@ -40,6 +40,10 @@ does: Back on its entry form ends the session instead of showing the list.
 | GraphicsConsoleDxe with the system font | `ratatui-gop` |
 | The HII database client of UiApp and Device Manager | `hii-uefi` |
 
+`ratatui-gop` checks the HII row width and height before it uses a firmware font.
+If the firmware substitutes an unscaled font, the backend uses its scaled bitmap font instead.
+
+
 ## Publish a formset from a UEFI driver
 
 1. Build a `forms::FormSet` with its forms, statements and variable stores.

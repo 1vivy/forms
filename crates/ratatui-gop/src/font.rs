@@ -201,12 +201,22 @@ impl HiiFont {
                 core::ptr::null_mut(),
             )
         };
+        // The output dimensions describe our buffer, not the selected font.
+        // Firmware can substitute its unscaled default for a missing SYSFONT.
+        let metrics_match = if !status.is_error() && row_count == 1 && !rows.is_null() {
+            // SAFETY: Successful StringToImage returned one allocated row record.
+            let row = unsafe { &*rows };
+            row.line_width == width && row.line_height == height
+        } else {
+            false
+        };
         if let Some(rows) = NonNull::new(rows.cast::<u8>()) {
             // SAFETY: StringToImage allocated the row array from the pool.
             let _ = unsafe { boot::free_pool(rows) };
         }
         if status.is_error()
             || output_pointer != original
+            || !metrics_match
             || usize::from(output.width) != width
             || usize::from(output.height) != height
         {
