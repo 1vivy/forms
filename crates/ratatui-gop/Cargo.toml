@@ -1,0 +1,15 @@
+[package]
+name = "ratatui-gop"
+description = "ratatui backend that draws on the UEFI graphics output protocol with a scaled bitmap font"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ratatui-core.workspace = true
+uefi = { workspace = true, features = ["alloc"] }
+uefi-raw.workspace = true

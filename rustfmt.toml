@@ -1,0 +1,2 @@
+# Keep the edition-2024 formatting style for every crate.
+style_edition = "2024"

@@ -1,0 +1,22 @@
+[package]
+name = "forms-tui"
+description = "ratatui widget for forms setup pages, usable by UEFI and host front ends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+forms.workspace = true
+ratatui-core.workspace = true
+ratatui-widgets.workspace = true
+
+[dev-dependencies]
+crossterm.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
+
+[[example]]
+name = "host"
