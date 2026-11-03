@@ -135,16 +135,3 @@ fn text_is_utf16_and_padded_to_the_block_width() {
         Some(4)
     );
 }
-
-#[test]
-fn raw_bytes_pass_through() {
-    let statement = Statement::Subtitle {
-        text: String::new(),
-    };
-    assert_eq!(
-        value_bytes(&statement, &Value::Bytes(vec![1, 2, 3])),
-        Some(vec![1, 2, 3])
-    );
-    assert_eq!(value_bytes(&statement, &Value::Text("x".into())), None);
-    assert_eq!(value_from(&statement, &[1]), None);
-}

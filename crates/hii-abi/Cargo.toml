@@ -6,8 +6,5 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[dev-dependencies]
-uefi-raw = { workspace = true }
-
 [lints]
 workspace = true

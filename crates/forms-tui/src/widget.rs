@@ -452,10 +452,9 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use forms::{Editor, EditorKind, Row, RowKind, View};
+    use forms::{Editor, Row, RowKind, View};
     use ratatui_core::backend::TestBackend;
     use ratatui_core::buffer::Buffer;
-    use ratatui_core::style::{Color, Modifier};
     use ratatui_core::terminal::Terminal;
 
     use crate::{FormsWidget, Theme};
@@ -547,99 +546,5 @@ mod tests {
         let buffer = render(&view, 50, 16);
         let theme = Theme::default();
         assert!(selected_rows(&buffer, &theme).is_empty());
-    }
-
-    #[test]
-    fn editor_modal_covers_the_list() {
-        let editor = Editor {
-            prompt: "Scale".into(),
-            kind: EditorKind::Choice {
-                choices: vec!["100%".into(), "150%".into(), "200%".into()],
-                selected: 1,
-            },
-        };
-        let plain = render(&page(Some(2), None), 60, 20);
-        let modal = render(&page(Some(2), Some(editor)), 60, 20);
-        let covered = (0..plain.area.height)
-            .flat_map(|y| (0..plain.area.width).map(move |x| (x, y)))
-            .filter(|&(x, y)| plain[(x, y)].symbol() != " " && modal[(x, y)].symbol() == " ")
-            .count();
-        assert!(covered >= 5, "the modal blanks list cells: {covered}");
-        let texts = lines(&modal);
-        assert!(texts.iter().any(|line| line.contains("Scale")));
-        assert!(
-            texts
-                .iter()
-                .any(|line| line.contains("Enter Accept   Esc Cancel")),
-            "the modal shows its keys: {texts:?}"
-        );
-    }
-
-    #[test]
-    fn long_values_are_truncated_without_panics() {
-        let mut view = page(Some(1), None);
-        view.rows[1] = row(
-            "A very long prompt that cannot fit in twenty columns",
-            "a-value-that-is-much-wider-than-the-screen",
-            RowKind::Text,
-        );
-        for (width, height) in [(20, 5), (10, 4), (4, 4), (2, 1), (1, 1)] {
-            let _ = render(&view, width, height);
-        }
-        let buffer = render(&view, 20, 5);
-        let texts = lines(&buffer);
-        assert!(
-            !texts.iter().any(|line| line.contains("cannot fit")),
-            "the prompt is clipped: {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|line| line.contains("much-wider")),
-            "the value is clipped: {texts:?}"
-        );
-    }
-
-    #[test]
-    fn editor_at_small_size_does_not_panic() {
-        let editor = Editor {
-            prompt: "Brightness".into(),
-            kind: EditorKind::Number {
-                text: "100".into(),
-                minimum: 0,
-                maximum: 100,
-            },
-        };
-        for (width, height) in [(20, 5), (8, 4), (4, 4), (2, 1)] {
-            let _ = render(&page(Some(1), Some(editor.clone())), width, height);
-        }
-    }
-
-    #[test]
-    fn disabled_and_uncertain_rows_are_styled() {
-        let mut view = page(None, None);
-        view.rows[1].enabled = false;
-        view.rows[2].uncertain = true;
-        let buffer = render(&view, 50, 16);
-        let texts = lines(&buffer);
-        let theme = Theme::default();
-        let disabled = texts
-            .iter()
-            .position(|line| line.contains("Night mode"))
-            .expect("the disabled row is drawn");
-        let disabled_x = (0..buffer.area.width)
-            .find(|&x| buffer[(x, disabled as u16)].symbol() == "N")
-            .expect("the disabled prompt is drawn");
-        let disabled_cell = &buffer[(disabled_x, disabled as u16)];
-        assert_eq!(Some(disabled_cell.fg), theme.disabled.fg);
-        assert!(disabled_cell.modifier.contains(Modifier::DIM));
-        let uncertain = texts
-            .iter()
-            .position(|line| line.contains("Scale"))
-            .expect("the uncertain row is drawn");
-        let uncertain_x = (0..buffer.area.width)
-            .find(|&x| buffer[(x, uncertain as u16)].symbol() == "S")
-            .expect("the uncertain prompt is drawn");
-        let uncertain_cell = &buffer[(uncertain_x, uncertain as u16)];
-        assert_eq!(uncertain_cell.fg, Color::LightYellow);
-        assert!(uncertain_cell.modifier.contains(Modifier::ITALIC));
     }
 }

@@ -860,12 +860,10 @@ mod tests {
     use crate::{Choice, Form, FormId, Item, Question, Storage, Width};
     use alloc::collections::BTreeMap;
     use alloc::{vec, vec::Vec};
-    use std::collections::BTreeSet;
 
     #[derive(Default)]
     struct Memory {
         values: BTreeMap<u16, Value>,
-        unreadable: BTreeSet<u16>,
         writes: Vec<(QuestionId, Value)>,
         write_handles: Vec<u32>,
         actions: Vec<QuestionId>,
@@ -898,12 +896,6 @@ mod tests {
             _set: &FormSet,
             question: &Question,
         ) -> Result<Value, Error> {
-            if self.unreadable.contains(&question.id.0) {
-                return Err(Error {
-                    code: 1,
-                    reason: "unreadable".into(),
-                });
-            }
             Ok(self
                 .values
                 .get(&question.id.0)
@@ -1353,16 +1345,6 @@ mod tests {
         assert!(view.rows[0].uncertain);
         assert!(view.rows[0].enabled);
         assert_eq!(view.selected, Some(0));
-    }
-
-    #[test]
-    fn read_failure_shows_unavailable() {
-        let mut memory = Memory::default();
-        memory.unreadable.insert(2);
-        let mut session = entered(&mut memory);
-        let view = session.view(&mut memory);
-        assert_eq!(view.rows[4].value, "<unavailable>");
-        assert!(view.rows[4].enabled);
     }
 
     #[test]

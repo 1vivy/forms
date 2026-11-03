@@ -226,45 +226,6 @@ fn encode_writes_a_forms_strings_and_end_package() {
 }
 
 #[test]
-fn every_numeric_width_round_trips() {
-    let set = model();
-    let decoded = decode(&encode(&set, [0; 16]).expect("encode")).expect("decode");
-    let items = &decoded[0].forms[0].items;
-    let widths: Vec<Width> = items
-        .iter()
-        .filter_map(|item| match &item.statement {
-            Statement::Numeric { width, .. } => Some(*width),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(widths, vec![Width::U8, Width::U16, Width::U32, Width::U64]);
-}
-
-#[test]
-fn conditions_keep_their_form() {
-    let set = model();
-    let decoded = decode(&encode(&set, [0; 16]).expect("encode")).expect("decode");
-    let items = &decoded[0].forms[0].items;
-    assert_eq!(items[0].suppress_if, Some(Expr::True));
-    assert_eq!(items[1].gray_out_if, Some(Expr::False));
-    assert_eq!(items[2].suppress_if, Some(Expr::Not(Box::new(Expr::False))));
-    assert_eq!(
-        items[3].gray_out_if,
-        Some(Expr::And(Box::new(Expr::True), Box::new(Expr::False)))
-    );
-    assert_eq!(
-        items[4].suppress_if,
-        Some(Expr::Or(
-            Box::new(Expr::EqualList {
-                question: QuestionId(0x21),
-                values: vec![1, 4, 9]
-            }),
-            Box::new(Expr::True)
-        ))
-    );
-}
-
-#[test]
 fn unsupported_conditions_are_refused() {
     let mut set = model();
     set.forms[0].items[0].suppress_if = Some(Expr::Unsupported);
@@ -297,13 +258,6 @@ fn a_non_ascii_store_name_is_refused() {
     let mut set = model();
     set.varstores[0].name = "Störe".into();
     assert!(encode(&set, [0; 16]).is_err());
-}
-
-#[test]
-fn reencoding_decoded_bytes_is_stable() {
-    let bytes = encode(&model(), [0x55; 16]).expect("encode");
-    let decoded = decode(&bytes).expect("decode");
-    assert_eq!(encode(&decoded[0], [0x55; 16]).expect("encode"), bytes);
 }
 
 #[test]

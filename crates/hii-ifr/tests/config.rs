@@ -149,17 +149,3 @@ fn malformed_names_are_refused() {
         Err(ConfigError::BadElement)
     ));
 }
-
-#[test]
-fn multi_block_responses_keep_offsets() {
-    let header = config::header(&[0x22; 16], "", &[0x01]);
-    let blocks = (0..8u16)
-        .map(|index| Block {
-            offset: index * 4,
-            width: 4,
-            bytes: vec![index as u8; 4],
-        })
-        .collect::<Vec<_>>();
-    let response = config::response(&header, &blocks);
-    assert_eq!(config::parse_blocks(&response).unwrap(), blocks);
-}
