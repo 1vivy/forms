@@ -27,7 +27,10 @@ does not depend on `forms`.
 
 `forms::Session` ends every page with a `< Back` row, so a front end with only
 three keys (a phone: volume up, volume down, power) can return to the previous
-page; `with_back_row(false)` removes it for a front end with an Esc key.
+page; `with_back_row(false)` removes it for a front end with an Esc key. Up and
+Down wrap at both ends of the selectable rows. A choice editor ends with the
+same `< Back` row and wraps the same way, so Enter on that row cancels the
+editor and leaves the committed value unchanged.
 `Session::enter(guid)` opens one formset and pins it, as `FormBrowser2.SendForm`
 does: Back on its entry form ends the session instead of showing the list.
 
@@ -48,6 +51,9 @@ Different providers can publish the same GUID without sharing question state.
 If the firmware substitutes an unscaled font, the backend uses its scaled bitmap font instead.
 The backend reuses one pixel row buffer for repaints. Clearing the grid uses
 one GOP fill instead of allocating and rendering an empty row repeatedly.
+`GopBackend::with_insets` starts the grid below a top margin and ends it above a
+bottom margin, both in physical pixels. Drawing and cursor repaints use that
+origin. A full clear also removes previous console text from the margins.
 
 
 ## Publish a formset from a UEFI driver

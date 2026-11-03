@@ -21,8 +21,9 @@ use crate::Theme;
 ///
 /// The page has a bordered title bar, a breadcrumb path, a row list with the
 /// prompt left and the value right, a help pane, a message line, a key-hint
-/// footer and an editor as a centered modal. The widget never panics on a
-/// small area; it drops the parts that do not fit.
+/// footer and an editor as a centered modal. A choice modal ends with a
+/// `< Back` row, so a front end without an Esc key cancels it. The widget
+/// never panics on a small area; it drops the parts that do not fit.
 ///
 /// # Examples
 ///
@@ -309,16 +310,21 @@ fn render_editor(editor: &Editor, area: Rect, buf: &mut Buffer, theme: &Theme) {
                 0
             };
             for (line, choice) in choices.iter().enumerate().skip(offset).take(rows) {
-                let line_area =
-                    Rect::new(inner.x, inner.y + (line - offset) as u16, inner.width, 1);
-                let chosen = line == *selected;
-                let mut style = Style::new().fg(theme.foreground);
-                buf.set_style(line_area, theme.page());
-                if chosen {
-                    style = style.patch(theme.selection);
-                    buf.set_style(line_area, theme.selection);
-                }
-                put(buf, line_area, &format!(" {choice}"), style);
+                render_choice(buf, theme, inner, line, offset, choice, line == *selected);
+            }
+            // The Back row follows the choices; it is the last entry of the
+            // list, so a phone cancels the editor with the volume keys alone.
+            let back = choices.len();
+            if back >= offset && back < offset.saturating_add(rows) {
+                render_choice(
+                    buf,
+                    theme,
+                    inner,
+                    back,
+                    offset,
+                    BACK_PROMPT,
+                    *selected == back,
+                );
             }
             if let Some(last) = last_line(inner) {
                 buf.set_style(last, theme.page());
@@ -399,6 +405,38 @@ fn render_editor(editor: &Editor, area: Rect, buf: &mut Buffer, theme: &Theme) {
     }
 }
 
+/// The prompt of the row that cancels a choice editor.
+const BACK_PROMPT: &str = "< Back";
+
+/// Draws one line of a choice modal: the label and the selection bar.
+///
+/// `line` is the index of the entry in the whole list, `offset` the index of
+/// the first visible line, so the drawn line is `line - offset`.
+fn render_choice(
+    buf: &mut Buffer,
+    theme: &Theme,
+    inner: Rect,
+    line: usize,
+    offset: usize,
+    label: &str,
+    selected: bool,
+) {
+    let Some(row) = line
+        .checked_sub(offset)
+        .filter(|row| *row < usize::from(inner.height))
+    else {
+        return;
+    };
+    let area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
+    let mut style = Style::new().fg(theme.foreground);
+    buf.set_style(area, theme.page());
+    if selected {
+        style = style.patch(theme.selection);
+        buf.set_style(area, theme.selection);
+    }
+    put(buf, area, &format!(" {label}"), style);
+}
+
 /// Returns the size of the modal for an editor inside `area`.
 fn editor_size(editor: &Editor, area: Rect) -> (u16, u16) {
     let (mut content, height) = match &editor.kind {
@@ -407,7 +445,10 @@ fn editor_size(editor: &Editor, area: Rect) -> (u16, u16) {
             for choice in choices {
                 content = content.max(Line::raw(choice.as_str()).width() + 2);
             }
-            let lines = u16::try_from(choices.len().max(1) + 2).unwrap_or(u16::MAX);
+            content = content.max(Line::raw(BACK_PROMPT).width() + 2);
+            // One line per choice, one for the Back row, one for the hints and
+            // two for the border.
+            let lines = u16::try_from(choices.len().max(1) + 4).unwrap_or(u16::MAX);
             (content, lines)
         }
         EditorKind::Number { .. } => (Line::raw(editor.prompt.as_str()).width().max(24), 5),
@@ -448,11 +489,12 @@ fn put(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use forms::{Editor, Row, RowKind, View};
+    use forms::{Editor, EditorKind, Row, RowKind, View};
     use ratatui_core::backend::TestBackend;
     use ratatui_core::buffer::Buffer;
     use ratatui_core::terminal::Terminal;
@@ -546,5 +588,51 @@ mod tests {
         let buffer = render(&view, 50, 16);
         let theme = Theme::default();
         assert!(selected_rows(&buffer, &theme).is_empty());
+    }
+
+    /// Builds a choice editor over `choices` with `selected` pending.
+    fn choice_editor(choices: Vec<String>, selected: usize) -> Editor {
+        Editor {
+            prompt: "Level".into(),
+            kind: EditorKind::Choice { choices, selected },
+        }
+    }
+
+    #[test]
+    fn choice_modal_shows_a_back_row_and_highlights_it() {
+        let editor = choice_editor(vec!["Low".into(), "High".into()], 2);
+        let view = page(None, Some(editor));
+        let buffer = render(&view, 50, 16);
+        let theme = Theme::default();
+        let texts = lines(&buffer);
+        let back = texts
+            .iter()
+            .position(|line| line.contains("< Back"))
+            .expect("the choice modal shows a Back row");
+        assert_eq!(selected_rows(&buffer, &theme), [back]);
+    }
+
+    #[test]
+    fn choice_modal_scrolls_the_back_row_into_view() {
+        let choices: Vec<String> = (0..9).map(|i| format!("Option {i}")).collect();
+        let selected = choices.len();
+        let editor = choice_editor(choices, selected);
+        let view = page(None, Some(editor));
+        let buffer = render(&view, 50, 12);
+        let theme = Theme::default();
+        let texts = lines(&buffer);
+        let back = texts
+            .iter()
+            .position(|line| line.contains("< Back"))
+            .expect("the Back row stays visible while the list scrolls");
+        assert_eq!(selected_rows(&buffer, &theme), [back]);
+        assert!(
+            texts.iter().any(|line| line.contains("Option 8")),
+            "the last choice sits next to Back: {texts:?}"
+        );
+        assert!(
+            texts.iter().all(|line| !line.contains("Option 0")),
+            "the first choices scrolled out: {texts:?}"
+        );
     }
 }

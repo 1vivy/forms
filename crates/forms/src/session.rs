@@ -104,7 +104,7 @@ pub enum EditorKind {
     Choice {
         /// Choice labels in publication order.
         choices: Vec<String>,
-        /// The selected choice index.
+        /// The pending choice index; `choices.len()` selects Back (cancel).
         selected: usize,
     },
     /// A decimal number and its inclusive bounds.
@@ -337,6 +337,10 @@ impl<H: Copy + Eq> Session<H> {
     /// message and return [`Event::Failed`] without calling the provider.
     /// Outside an editor, Back pops the form stack and returns
     /// [`Event::Exit`] at the root.
+    ///
+    /// Up and Down wrap between the first and the last selectable row. In a
+    /// choice editor they wrap the same way, and the last entry is the Back
+    /// row, which cancels the editor without a write.
     pub fn input<P: Provider<Handle = H>>(&mut self, input: Input, provider: &mut P) -> Event {
         if self.editor.is_some() {
             return self.edit(input, provider);
@@ -358,8 +362,10 @@ impl<H: Copy + Eq> Session<H> {
                 .and_then(|s| selectable.iter().position(|i| *i == s))
                 .unwrap_or(0);
             let next = match input {
-                Input::Up => current.saturating_sub(1),
-                Input::Down => (current + 1).min(selectable.len().saturating_sub(1)),
+                Input::Up if current == 0 => selectable.len().saturating_sub(1),
+                Input::Up => current - 1,
+                Input::Down if current + 1 < selectable.len() => current + 1,
+                Input::Down => 0,
                 _ => 0,
             };
             self.select(selectable.get(next).copied());
@@ -641,13 +647,35 @@ impl<H: Copy + Eq> Session<H> {
             self.message = None;
             return Event::Changed;
         }
+        // The Back row is the last entry of a choice editor, so Enter on it
+        // cancels without a write. Check it before the mutable borrow below.
+        if input == Input::Enter
+            && matches!(
+                self.editor.as_ref().map(|(_, editor)| &editor.kind),
+                Some(EditorKind::Choice { choices, selected }) if *selected == choices.len()
+            )
+        {
+            self.editor = None;
+            self.message = None;
+            return Event::Changed;
+        }
         let (source, editor) = self.editor.as_mut().expect("editor exists");
         if input != Input::Enter {
             match &mut editor.kind {
                 EditorKind::Choice { choices, selected } => match input {
-                    Input::Up | Input::Left => *selected = selected.saturating_sub(1),
+                    Input::Up | Input::Left => {
+                        *selected = if *selected == 0 {
+                            choices.len()
+                        } else {
+                            *selected - 1
+                        };
+                    }
                     Input::Down | Input::Right => {
-                        *selected = (*selected + 1).min(choices.len().saturating_sub(1))
+                        *selected = if *selected < choices.len() {
+                            *selected + 1
+                        } else {
+                            0
+                        };
                     }
                     Input::Home => *selected = 0,
                     _ => return Event::None,
@@ -1118,9 +1146,9 @@ mod tests {
         session.input(Input::Down, &mut memory);
         assert_eq!(session.view(&mut memory).selected, Some(4));
         session.input(Input::Down, &mut memory);
-        assert_eq!(session.view(&mut memory).selected, Some(4));
-        session.input(Input::Up, &mut memory);
         assert_eq!(session.view(&mut memory).selected, Some(2));
+        session.input(Input::Up, &mut memory);
+        assert_eq!(session.view(&mut memory).selected, Some(4));
         session.input(Input::Home, &mut memory);
         assert_eq!(session.view(&mut memory).selected, Some(2));
     }
@@ -1234,6 +1262,94 @@ mod tests {
         );
         assert_eq!(memory.writes, [(QuestionId(2), Value::Number(20))]);
         assert_eq!(session.view(&mut memory).rows[4].value, "High");
+    }
+
+    /// Returns the pending index of the open choice editor.
+    ///
+    /// `choices.len()` is the Back row, which cancels instead of committing.
+    fn choice_index(session: &mut Session<u32>, memory: &mut Memory) -> usize {
+        match session.view(memory).editor {
+            Some(Editor {
+                kind: EditorKind::Choice { selected, .. },
+                ..
+            }) => selected,
+            other => panic!("no choice editor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choice_editor_wraps_through_the_back_row() {
+        let mut memory = Memory::default();
+        memory.put(2, Value::Number(10));
+        let mut session = entered(&mut memory);
+        session.input(Input::Down, &mut memory);
+        session.input(Input::Down, &mut memory);
+        session.input(Input::Enter, &mut memory);
+        assert_eq!(choice_index(&mut session, &mut memory), 0);
+        // Up from the first choice reaches Back, and Up again the last choice.
+        session.input(Input::Up, &mut memory);
+        assert_eq!(
+            choice_index(&mut session, &mut memory),
+            2,
+            "Back follows the choices"
+        );
+        session.input(Input::Up, &mut memory);
+        assert_eq!(choice_index(&mut session, &mut memory), 1);
+        session.input(Input::Down, &mut memory);
+        assert_eq!(choice_index(&mut session, &mut memory), 2);
+        session.input(Input::Down, &mut memory);
+        assert_eq!(choice_index(&mut session, &mut memory), 0);
+    }
+
+    #[test]
+    fn enter_on_the_back_row_cancels_without_writing() {
+        let mut memory = Memory::default();
+        memory.put(2, Value::Number(10));
+        let mut session = entered(&mut memory);
+        session.input(Input::Down, &mut memory);
+        session.input(Input::Down, &mut memory);
+        session.input(Input::Enter, &mut memory);
+        session.input(Input::Up, &mut memory);
+        assert_eq!(choice_index(&mut session, &mut memory), 2);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        let view = session.view(&mut memory);
+        assert!(view.editor.is_none());
+        assert!(memory.writes.is_empty(), "a cancel never commits");
+        assert_eq!(view.rows[4].value, "Low", "the committed value stays");
+    }
+
+    #[test]
+    fn choice_without_options_cancels_without_writing() {
+        let mut memory = Memory::default();
+        let set = formset(
+            0x30,
+            "Empty",
+            vec![form(
+                1,
+                "Empty",
+                vec![item(Statement::OneOf {
+                    question: question(2, "Mode"),
+                    width: Width::U8,
+                    choices: Vec::new(),
+                })],
+            )],
+        );
+        let mut session = Session::new(vec![(1, set)]).with_back_row(false);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        assert_eq!(
+            session.view(&mut memory).editor,
+            Some(Editor {
+                prompt: "Mode".into(),
+                kind: EditorKind::Choice {
+                    choices: Vec::new(),
+                    selected: 0,
+                },
+            })
+        );
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        assert!(session.view(&mut memory).editor.is_none());
+        assert!(memory.writes.is_empty());
     }
 
     #[test]
@@ -1393,9 +1509,10 @@ mod tests {
         assert_eq!(session.view(&mut memory).title, "Formsets");
     }
 
-    /// Presses Down until the selection stops moving.
+    /// Selects the last navigable row through wraparound.
     fn to_last(session: &mut Session<u32>, memory: &mut Memory) {
-        while session.input(Input::Down, memory) == Event::Changed {}
+        session.input(Input::Home, memory);
+        session.input(Input::Up, memory);
     }
 
     #[test]
@@ -1412,6 +1529,13 @@ mod tests {
         to_last(&mut session, &mut memory);
         let view = session.view(&mut memory);
         assert_eq!(view.selected, Some(view.rows.len() - 1));
+        // Down wraps from the Back row to the first navigable row, and Up
+        // wraps back again, so a phone reaches every row with two keys.
+        let last = view.rows.len() - 1;
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).selected, Some(2));
+        assert_eq!(session.input(Input::Up, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).selected, Some(last));
         assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
         assert_eq!(session.view(&mut memory).title, "Formsets");
         assert!(memory.writes.is_empty());

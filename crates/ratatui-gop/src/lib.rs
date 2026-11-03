@@ -8,6 +8,8 @@
 //!
 //! - [`GopBackend::new`] takes an opened graphics output protocol and an
 //!   optional scale.
+//! - [`GopBackend::with_insets`] keeps the grid inside a safe area with a top
+//!   and bottom margin in physical pixels.
 //! - [`GopBackend`] implements [`ratatui_core::backend::Backend`], so it works
 //!   with `ratatui_core::Terminal` directly.
 //!

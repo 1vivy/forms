@@ -53,6 +53,8 @@ pub struct GopBackend {
     columns: u16,
     rows: u16,
     pixels: (usize, usize),
+    /// The top safe-area margin in physical pixels; the grid starts there.
+    top: usize,
     cursor: Position,
     cursor_visible: bool,
     drawn_cursor: Option<Position>,
@@ -68,6 +70,9 @@ impl GopBackend {
     /// `8 * scale` by `19 * scale` pixels. `None` chooses the largest factor
     /// that keeps at least 40 columns and one row.
     ///
+    /// The grid starts at the top-left corner of the mode. Use
+    /// [`GopBackend::with_insets`] when the panel hides an edge.
+    ///
     /// # Errors
     ///
     /// Returns [`Status::UNSUPPORTED`] when the current mode is smaller than
@@ -77,6 +82,47 @@ impl GopBackend {
     ///
     /// Does not panic. A mode with a `Blt`-only pixel format is supported.
     pub fn new(gop: ScopedProtocol<GraphicsOutput>, scale: Option<u8>) -> Result<Self> {
+        Self::with_insets(gop, scale, 0, 0)
+    }
+
+    /// Starts a backend on `gop` inside a safe area.
+    ///
+    /// `top` and `bottom` are margins in physical pixels. The grid keeps the
+    /// mode width and drops the rows that cross either margin. A full clear
+    /// also clears the margins so previous console text does not remain there.
+    /// An inset that would hide the last row is shrunk.
+    ///
+    /// Use this for a panel whose edges are hidden, and derive the margins from
+    /// the live mode, never from a fixed panel geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Status::UNSUPPORTED`] when the current mode is smaller than
+    /// one glyph cell.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ratatui_core::Terminal;
+    /// use ratatui_gop::GopBackend;
+    /// use uefi::boot;
+    ///
+    /// let gop = boot::open_protocol_exclusive::<uefi::proto::console::gop::GraphicsOutput>(
+    ///     boot::get_handle_for_protocol::<uefi::proto::console::gop::GraphicsOutput>()
+    ///         .expect("no graphics output"),
+    /// )
+    /// .expect("cannot open the graphics output");
+    /// // A 46/1000 top margin of a 2772-pixel panel, and four pixels at the bottom.
+    /// let backend = GopBackend::with_insets(gop, None, 127, 4).expect("no usable mode");
+    /// let mut terminal = Terminal::new(backend).expect("cannot start the terminal");
+    /// assert!(terminal.size().expect("no size").height > 0);
+    /// ```
+    pub fn with_insets(
+        gop: ScopedProtocol<GraphicsOutput>,
+        scale: Option<u8>,
+        top: usize,
+        bottom: usize,
+    ) -> Result<Self> {
         let info = gop.current_mode_info();
         let (width, height) = info.resolution();
         let scale = scale
@@ -86,8 +132,11 @@ impl GopBackend {
         if width < cell_width || height < cell_height {
             return Err(Status::UNSUPPORTED.into());
         }
+        // Keep one row: an inset that would hide the whole grid is shrunk.
+        let top = top.min(height - cell_height);
+        let bottom = bottom.min(height - top - cell_height);
         let columns = u16::try_from(width / cell_width).unwrap_or(u16::MAX);
-        let rows = u16::try_from(height / cell_height).unwrap_or(u16::MAX);
+        let rows = u16::try_from((height - top - bottom) / cell_height).unwrap_or(u16::MAX);
         let screen = vec![None; usize::from(columns) * usize::from(rows)];
         let mut backend = Self {
             gop,
@@ -95,6 +144,7 @@ impl GopBackend {
             columns,
             rows,
             pixels: (width, height),
+            top,
             cursor: Position { x: 0, y: 0 },
             cursor_visible: false,
             drawn_cursor: None,
@@ -158,7 +208,10 @@ impl GopBackend {
         self.gop.blt(BltOp::BufferToVideo {
             buffer: &self.scratch[..width * cell_height],
             src: BltRegion::Full,
-            dest: (usize::from(x0) * cell_width, usize::from(y) * cell_height),
+            dest: (
+                usize::from(x0) * cell_width,
+                self.top + usize::from(y) * cell_height,
+            ),
             dims: (width, cell_height),
         })
     }
@@ -252,7 +305,6 @@ impl Backend for GopBackend {
         self.cursor_visible = false;
         let empty = CellSig::default();
         self.screen.fill(Some(empty));
-        let (cell_width, cell_height) = self.font.cell();
         self.gop.blt(BltOp::VideoFill {
             color: BltPixel::new(
                 empty.background.red,
@@ -260,10 +312,7 @@ impl Backend for GopBackend {
                 empty.background.blue,
             ),
             dest: (0, 0),
-            dims: (
-                usize::from(self.columns) * cell_width,
-                usize::from(self.rows) * cell_height,
-            ),
+            dims: self.pixels,
         })
     }
 
