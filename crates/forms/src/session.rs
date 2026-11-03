@@ -145,7 +145,8 @@ pub struct View {
 }
 
 #[derive(Clone)]
-struct Page {
+struct Page<H> {
+    handle: H,
     guid: Guid,
     form: FormId,
     selected: Option<usize>,
@@ -172,7 +173,7 @@ const BACK_PROMPT: &str = "< Back";
 /// ```
 pub struct Session<H> {
     sets: Vec<(H, FormSet)>,
-    pages: Vec<Page>,
+    pages: Vec<Page<H>>,
     root: Option<usize>,
     editor: Option<(usize, Editor)>,
     message: Option<String>,
@@ -225,6 +226,11 @@ impl<H: Copy + Eq> Session<H> {
     /// list, as `FormBrowser2.SendForm` does for one formset. Returns `false`
     /// and changes nothing when no formset with forms has this GUID.
     ///
+    /// Several providers can publish a formset with the same GUID. The method
+    /// then selects the first published formset with that GUID. Every later
+    /// page, edit, write and action of the session uses the handle of that
+    /// formset, never another formset with the same GUID.
+    ///
     /// # Examples
     ///
     /// ```
@@ -232,17 +238,18 @@ impl<H: Copy + Eq> Session<H> {
     /// assert!(!session.enter(&[0x11; 16]));
     /// ```
     pub fn enter(&mut self, guid: &Guid) -> bool {
-        let Some(form) = self
+        let Some((handle, form)) = self
             .sets
             .iter()
             .find(|(_, set)| set.guid == *guid)
-            .and_then(|(_, set)| set.forms.first())
+            .and_then(|(handle, set)| set.forms.first().map(|form| (*handle, form.id)))
         else {
             return false;
         };
         self.pages = alloc::vec![Page {
+            handle,
             guid: *guid,
-            form: form.id,
+            form,
             selected: None,
         }];
         self.base = 1;
@@ -253,6 +260,8 @@ impl<H: Copy + Eq> Session<H> {
 
     /// Replaces published forms. Keeps surviving pages and their selection.
     ///
+    /// Pages and the root selection retain both the provider handle and GUID.
+    ///
     /// An open editor is cancelled because its question may have changed.
     ///
     /// # Examples
@@ -262,15 +271,20 @@ impl<H: Copy + Eq> Session<H> {
     /// session.replace(Vec::new());
     /// ```
     pub fn replace(&mut self, mut sets: Vec<(H, FormSet)>) {
-        let root_guid = self.root.and_then(|i| self.sets.get(i)).map(|s| s.1.guid);
+        let root_identity = self
+            .root
+            .and_then(|i| self.sets.get(i))
+            .map(|s| (s.0, s.1.guid));
         sets.sort_by(|a, b| a.1.title.cmp(&b.1.title));
-        self.root = root_guid.and_then(|guid| sets.iter().position(|s| s.1.guid == guid));
+        self.root = root_identity
+            .and_then(|(handle, guid)| sets.iter().position(|s| s.0 == handle && s.1.guid == guid));
         let valid = self
             .pages
             .iter()
             .take_while(|page| {
-                sets.iter()
-                    .any(|(_, set)| set.guid == page.guid && set.form(page.form).is_some())
+                sets.iter().any(|(handle, set)| {
+                    *handle == page.handle && set.guid == page.guid && set.form(page.form).is_some()
+                })
             })
             .count();
         self.pages.truncate(valid);
@@ -301,7 +315,7 @@ impl<H: Copy + Eq> Session<H> {
             title = self
                 .sets
                 .iter()
-                .find(|s| s.1.guid == page.guid)
+                .find(|s| s.0 == page.handle && s.1.guid == page.guid)
                 .and_then(|s| s.1.form(page.form))
                 .map(|f| f.title.clone())
                 .unwrap_or_default();
@@ -368,6 +382,7 @@ impl<H: Copy + Eq> Session<H> {
             let set = &self.sets[source].1;
             if let Some(form) = set.forms.first() {
                 self.pages.push(Page {
+                    handle: self.sets[source].0,
                     guid: set.guid,
                     form: form.id,
                     selected: None,
@@ -381,12 +396,13 @@ impl<H: Copy + Eq> Session<H> {
         let (handle, set) = self
             .sets
             .iter()
-            .find(|s| s.1.guid == page.guid)
+            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
             .expect("page formset exists");
         let statement = &set.form(page.form).expect("page form exists").items[source].statement;
         if let Statement::Goto { form, .. } = statement {
             if set.form(*form).is_some() {
                 self.pages.push(Page {
+                    handle: *handle,
                     guid: set.guid,
                     form: *form,
                     selected: None,
@@ -513,7 +529,7 @@ impl<H: Copy + Eq> Session<H> {
         let (handle, set) = self
             .sets
             .iter()
-            .find(|s| s.1.guid == page.guid)
+            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
             .expect("page formset exists");
         let form = set.form(page.form).expect("page form exists");
         let mut entries: Vec<Entry> = form
@@ -650,7 +666,7 @@ impl<H: Copy + Eq> Session<H> {
                         let set = &self
                             .sets
                             .iter()
-                            .find(|s| s.1.guid == page.guid)
+                            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
                             .expect("editor formset exists")
                             .1;
                         let Statement::Numeric { step, .. } =
@@ -691,7 +707,7 @@ impl<H: Copy + Eq> Session<H> {
         let (handle, set) = self
             .sets
             .iter()
-            .find(|s| s.1.guid == page.guid)
+            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
             .expect("editor formset exists");
         let statement = &set.form(page.form).expect("editor form exists").items[*source].statement;
         let value = match (&editor.kind, statement) {
@@ -851,7 +867,9 @@ mod tests {
         values: BTreeMap<u16, Value>,
         unreadable: BTreeSet<u16>,
         writes: Vec<(QuestionId, Value)>,
+        write_handles: Vec<u32>,
         actions: Vec<QuestionId>,
+        action_handles: Vec<u32>,
         responses: BTreeMap<u16, Response>,
     }
 
@@ -895,12 +913,13 @@ mod tests {
 
         fn write(
             &mut self,
-            _handle: Self::Handle,
+            handle: Self::Handle,
             _set: &FormSet,
             question: &Question,
             value: &Value,
         ) -> Result<Response, Error> {
             self.writes.push((question.id, value.clone()));
+            self.write_handles.push(handle);
             self.values.insert(question.id.0, value.clone());
             Ok(self
                 .responses
@@ -911,11 +930,12 @@ mod tests {
 
         fn action(
             &mut self,
-            _handle: Self::Handle,
+            handle: Self::Handle,
             _set: &FormSet,
             question: &Question,
         ) -> Result<Response, Error> {
             self.actions.push(question.id);
+            self.action_handles.push(handle);
             Ok(self
                 .responses
                 .get(&question.id.0)
@@ -1430,5 +1450,154 @@ mod tests {
         // The Back row of the pinned form exits too.
         to_last(&mut session, &mut memory);
         assert_eq!(session.input(Input::Enter, &mut memory), Event::Exit);
+    }
+
+    #[test]
+    fn duplicate_formset_guids_keep_provider_identity() {
+        // Two providers publish one GUID. Their forms differ, so a lookup by
+        // GUID alone shows the wrong page and routes to the wrong provider.
+        let alpha = formset(
+            0x70,
+            "Alpha",
+            vec![form(
+                1,
+                "Alpha Main",
+                vec![
+                    item(Statement::Action {
+                        question: question(5, "Alpha run"),
+                    }),
+                    item(Statement::Checkbox {
+                        question: question(1, "Alpha flag"),
+                        default: false,
+                    }),
+                ],
+            )],
+        );
+        let beta = formset(
+            0x70,
+            "Beta",
+            vec![
+                form(
+                    1,
+                    "Beta Main",
+                    vec![
+                        item(Statement::Goto {
+                            prompt: "More".into(),
+                            help: String::new(),
+                            form: FormId(2),
+                            question: None,
+                        }),
+                        item(Statement::Action {
+                            question: question(6, "Beta run"),
+                        }),
+                        item(Statement::Checkbox {
+                            question: question(1, "Beta flag"),
+                            default: false,
+                        }),
+                    ],
+                ),
+                form(
+                    2,
+                    "Beta Extra",
+                    vec![item(Statement::Checkbox {
+                        question: question(7, "Beta extra flag"),
+                        default: false,
+                    })],
+                ),
+            ],
+        );
+        let mut memory = Memory::default();
+        let mut session =
+            Session::new(vec![(2, beta.clone()), (1, alpha.clone())]).with_back_row(false);
+        let view = session.view(&mut memory);
+        let titles: Vec<_> = view.rows.iter().map(|row| row.prompt.as_str()).collect();
+        assert_eq!(titles, ["Alpha", "Beta"]);
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).title, "Beta Main");
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        let view = session.view(&mut memory);
+        assert_eq!(view.title, "Beta Extra");
+        assert_eq!(view.path, ["Formsets", "Beta Main"]);
+
+        // A refresh republishes both formsets with the same GUID. The pages
+        // stay on the handle that opened them, and show the refreshed forms.
+        let refreshed = formset(
+            0x70,
+            "Beta",
+            vec![
+                form(
+                    1,
+                    "Beta Main",
+                    vec![
+                        item(Statement::Goto {
+                            prompt: "More".into(),
+                            help: String::new(),
+                            form: FormId(2),
+                            question: None,
+                        }),
+                        item(Statement::Action {
+                            question: question(6, "Beta run"),
+                        }),
+                        item(Statement::Checkbox {
+                            question: question(1, "Beta flag"),
+                            default: false,
+                        }),
+                        item(Statement::Action {
+                            question: question(8, "Beta added"),
+                        }),
+                    ],
+                ),
+                form(
+                    2,
+                    "Beta Extra Refreshed",
+                    vec![item(Statement::Checkbox {
+                        question: question(7, "Beta extra flag"),
+                        default: false,
+                    })],
+                ),
+            ],
+        );
+        session.replace(vec![(2, refreshed), (1, alpha.clone())]);
+        let view = session.view(&mut memory);
+        assert_eq!(view.title, "Beta Extra Refreshed");
+        assert_eq!(view.path, ["Formsets", "Beta Main"]);
+        assert_eq!(view.selected, Some(0));
+
+        // Actions and writes reach the provider that owns the open pages.
+        assert_eq!(session.input(Input::Back, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).title, "Beta Main");
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).selected, Some(1));
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(Response::None)
+        );
+        assert_eq!(memory.actions, [QuestionId(6)]);
+        assert_eq!(memory.action_handles, [2]);
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(Response::None)
+        );
+        assert_eq!(memory.writes, [(QuestionId(1), Value::Number(1))]);
+        assert_eq!(memory.write_handles, [2]);
+        assert_eq!(session.view(&mut memory).rows[2].value, "On");
+
+        // `enter` picks the first published formset with the GUID, and the
+        // pinned session keeps that handle.
+        let mut memory = Memory::default();
+        let mut pinned = Session::new(vec![(2, beta), (1, alpha)]).with_back_row(false);
+        assert!(pinned.enter(&[0x70; 16]));
+        let view = pinned.view(&mut memory);
+        assert_eq!(view.title, "Alpha Main");
+        assert!(view.path.is_empty());
+        assert_eq!(pinned.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(
+            pinned.input(Input::Enter, &mut memory),
+            Event::Response(Response::None)
+        );
+        assert_eq!(memory.writes, [(QuestionId(1), Value::Number(1))]);
+        assert_eq!(memory.write_handles, [1]);
     }
 }

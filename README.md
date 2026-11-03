@@ -31,6 +31,10 @@ page; `with_back_row(false)` removes it for a front end with an Esc key.
 `Session::enter(guid)` opens one formset and pins it, as `FormBrowser2.SendForm`
 does: Back on its entry form ends the session instead of showing the list.
 
+Navigation and refresh preserve both the provider handle and the formset GUID.
+Different providers can publish the same GUID without sharing question state.
+`enter(guid)` selects the first matching provider and retains that identity.
+
 | EDK II component | Equivalent here |
 | --- | --- |
 | `UefiInternalFormRepresentation.h`, `UefiHii.h` | `hii-abi` |
@@ -64,8 +68,9 @@ Config Access makes the questions operable:
 This repository does not yet supply a Config Access implementation for a
 driver; the publishing driver implements the three functions.
 
-Registration is additive. Every formset has its own GUID, so a platform adds its
-pages next to the stock pages, and every browser lists both.
+Registration is additive. A platform publishes its pages next to stock pages,
+and the browser lists both. A provider handle distinguishes separate instances
+of the same formset GUID.
 
 ## Use on Linux
 
