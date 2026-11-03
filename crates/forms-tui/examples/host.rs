@@ -2,7 +2,9 @@
 //!
 //! Start it without arguments for an interactive page. Start it with `--once`
 //! to draw one frame to a test backend and print that frame; that path needs no
-//! terminal and proves the first frame of the stack on a Linux host.
+//! terminal and proves the first frame of the stack on a Linux host. Add
+//! `--columns N` and `--rows N` to draw a frame at another size, and `--open`
+//! to open the editor of the first question row.
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -10,7 +12,8 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEventKind, KeyModifiers};
 use forms::{
     Choice, Error, Form, FormId, FormSet, Input, Provider, Question, QuestionFlags, QuestionId,
-    Response, Session, Statement, Storage, Value, VarStore, VarStoreId, VarStoreKind, Width,
+    Response, RowKind, Session, Statement, Storage, Value, VarStore, VarStoreId, VarStoreKind,
+    Width,
 };
 use forms_tui::FormsWidget;
 use ratatui::DefaultTerminal;
@@ -270,6 +273,26 @@ fn map_key(code: KeyCode) -> Option<Input> {
     })
 }
 
+/// Options of the `--once` frame.
+struct Frame {
+    /// Text columns of the test backend.
+    columns: u16,
+    /// Text rows of the test backend.
+    rows: u16,
+    /// Whether to open the first editor before the frame.
+    open: bool,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self {
+            columns: 80,
+            rows: 24,
+            open: false,
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let mut provider = Memory::new();
     let mut session = Session::new(
@@ -277,8 +300,30 @@ fn main() -> io::Result<()> {
             .formsets()
             .expect("in-memory formsets are readable"),
     );
-    if std::env::args().any(|argument| argument == "--once") {
-        return render_once(&mut session, &mut provider);
+    let mut once = false;
+    let mut frame = Frame::default();
+    let mut arguments = std::env::args().skip(1);
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--once" => once = true,
+            "--open" => frame.open = true,
+            "--columns" => {
+                frame.columns = arguments
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(frame.columns);
+            }
+            "--rows" => {
+                frame.rows = arguments
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(frame.rows);
+            }
+            _ => {}
+        }
+    }
+    if once {
+        return render_once(&mut session, &mut provider, &frame);
     }
     let mut terminal = ratatui::init();
     let outcome = event_loop(&mut terminal, &mut session, &mut provider);
@@ -313,9 +358,45 @@ fn event_loop(
     }
 }
 
+/// Selects the first row that opens an editor and presses Enter on it.
+///
+/// The `--open` frame needs a modal, and a toggle row changes a value instead
+/// of opening one.
+fn open_first_editor(session: &mut Session<u8>, provider: &mut Memory) {
+    // The first page lists formsets; Enter on its first row opens one.
+    if session
+        .view(provider)
+        .rows
+        .first()
+        .is_some_and(|row| row.kind == RowKind::FormSet)
+    {
+        session.input(Input::Enter, provider);
+    }
+    for _ in 0..session.view(provider).rows.len() {
+        let view = session.view(provider);
+        let Some(row) = view.selected.and_then(|index| view.rows.get(index)) else {
+            return;
+        };
+        if matches!(row.kind, RowKind::Choice | RowKind::Number | RowKind::Text) {
+            session.input(Input::Enter, provider);
+            return;
+        }
+        if session.input(Input::Down, provider) == forms::Event::Exit {
+            return;
+        }
+    }
+}
+
 /// Draws one frame to a test backend and prints it.
-fn render_once(session: &mut Session<u8>, provider: &mut Memory) -> io::Result<()> {
-    let backend = TestBackend::new(80, 24);
+fn render_once(
+    session: &mut Session<u8>,
+    provider: &mut Memory,
+    options: &Frame,
+) -> io::Result<()> {
+    if options.open {
+        open_first_editor(session, provider);
+    }
+    let backend = TestBackend::new(options.columns.max(4), options.rows.max(4));
     let mut terminal = ratatui::Terminal::new(backend).expect("the test backend cannot fail");
     terminal
         .draw(|frame| {

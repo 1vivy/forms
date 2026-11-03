@@ -34,6 +34,15 @@ editor and leaves the committed value unchanged.
 `Session::enter(guid)` opens one formset and pins it, as `FormBrowser2.SendForm`
 does: Back on its entry form ends the session instead of showing the list.
 
+`FormsWidget` keeps the usual setup-browser columns at any width. The prompt is
+on the left, the value is on the right, and one blank cell separates them. A
+value that does not fit its column loses its tail and ends with `~`, so clipped
+text is visible as clipped. A read-only value (`RowKind::Info`) wraps into the
+value column instead, and the row takes one screen line per wrapped part. The
+selection still follows rows, not lines. Key hints are centered with one blank
+cell at each edge, and the widget uses the longest hint that fits the width. The
+page footer changes with the active editor; popups do not repeat those hints.
+
 Navigation and refresh preserve both the provider handle and the formset GUID.
 Different providers can publish the same GUID without sharing question state.
 `enter(guid)` selects the first matching provider and retains that identity.
@@ -90,6 +99,19 @@ feeds key strokes to a `forms::Session` and draws each `forms::View` with
 
 `cargo run -p forms-tui --example host` runs that loop in a terminal over an
 in-memory provider. `--once` draws one frame and prints it.
+
+Draw a frame at the width of a phone screen, and a frame with an open editor:
+
+```sh
+cargo run -p forms-tui --example host -- --once --columns 53 --rows 20
+cargo run -p forms-tui --example host -- --once --columns 53 --rows 20 --open
+```
+
+Check three things in the printed frame:
+
+- The key hints are centered and keep one blank cell at each edge.
+- Opening an editor changes the page footer without adding hints to its border.
+- A long read-only value wraps, and a clipped value ends with `~`.
 
 ## Build and check
 
