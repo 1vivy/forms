@@ -46,6 +46,8 @@ Different providers can publish the same GUID without sharing question state.
 
 `ratatui-gop` checks the HII row width and height before it uses a firmware font.
 If the firmware substitutes an unscaled font, the backend uses its scaled bitmap font instead.
+The backend reuses one pixel row buffer for repaints. Clearing the grid uses
+one GOP fill instead of allocating and rendering an empty row repeatedly.
 
 
 ## Publish a formset from a UEFI driver

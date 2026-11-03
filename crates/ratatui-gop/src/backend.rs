@@ -57,6 +57,8 @@ pub struct GopBackend {
     cursor_visible: bool,
     drawn_cursor: Option<Position>,
     screen: Vec<Option<CellSig>>,
+    /// Reusable storage for the largest run of one character row.
+    scratch: Vec<BltPixel>,
 }
 
 impl GopBackend {
@@ -75,7 +77,8 @@ impl GopBackend {
     ///
     /// Does not panic. A mode with a `Blt`-only pixel format is supported.
     pub fn new(gop: ScopedProtocol<GraphicsOutput>, scale: Option<u8>) -> Result<Self> {
-        let (width, height) = gop.current_mode_info().resolution();
+        let info = gop.current_mode_info();
+        let (width, height) = info.resolution();
         let scale = scale
             .map(|scale| scale.clamp(1, MAX_SCALE))
             .unwrap_or_else(|| choose_scale(width, height));
@@ -96,6 +99,7 @@ impl GopBackend {
             cursor_visible: false,
             drawn_cursor: None,
             screen,
+            scratch: vec![BltPixel::new(0, 0, 0); usize::from(columns) * cell_width * cell_height],
         };
         backend.clear()?;
         Ok(backend)
@@ -129,11 +133,8 @@ impl GopBackend {
         let (cell_width, cell_height) = self.font.cell();
         let count = usize::from(x1 - x0);
         let width = count * cell_width;
-        let mut pixels = vec![BltPixel::new(0, 0, 0); width * cell_height];
-        let signatures: Vec<CellSig> = (x0..x1)
-            .map(|x| self.screen[self.index(x, y)].unwrap_or_default())
-            .collect();
-        for (offset, signature) in signatures.iter().enumerate() {
+        for (offset, x) in (x0..x1).enumerate() {
+            let signature = self.screen[self.index(x, y)].unwrap_or_default();
             let glyph = self.font.glyph(signature.character);
             let inverted =
                 invert.is_some_and(|column| usize::from(column) == usize::from(x0) + offset);
@@ -150,12 +151,12 @@ impl GopBackend {
                     if signature.underline && row + (cell_height / 19).max(1) >= cell_height {
                         pixel = BltPixel::new(foreground.red, foreground.green, foreground.blue);
                     }
-                    pixels[row * width + base + column] = pixel;
+                    self.scratch[row * width + base + column] = pixel;
                 }
             }
         }
         self.gop.blt(BltOp::BufferToVideo {
-            buffer: &pixels,
+            buffer: &self.scratch[..width * cell_height],
             src: BltRegion::Full,
             dest: (usize::from(x0) * cell_width, usize::from(y) * cell_height),
             dims: (width, cell_height),
@@ -251,10 +252,19 @@ impl Backend for GopBackend {
         self.cursor_visible = false;
         let empty = CellSig::default();
         self.screen.fill(Some(empty));
-        for y in 0..self.rows {
-            self.paint_run(y, 0, self.columns, None)?;
-        }
-        Ok(())
+        let (cell_width, cell_height) = self.font.cell();
+        self.gop.blt(BltOp::VideoFill {
+            color: BltPixel::new(
+                empty.background.red,
+                empty.background.green,
+                empty.background.blue,
+            ),
+            dest: (0, 0),
+            dims: (
+                usize::from(self.columns) * cell_width,
+                usize::from(self.rows) * cell_height,
+            ),
+        })
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<()> {
