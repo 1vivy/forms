@@ -1,7 +1,6 @@
 //! The widget that draws one setup page.
 
 use alloc::{format, string::String};
-use forms::{Editor, EditorKind, Row, RowKind, View};
 use ratatui_core::{
     buffer::Buffer,
     layout::Rect,
@@ -15,7 +14,7 @@ use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
 };
 
-use crate::Theme;
+use crate::{Editor, EditorKind, Row, RowKind, View, widgets::Theme};
 
 /// Draws a [`View`] as a setup page.
 ///
@@ -37,7 +36,7 @@ use crate::Theme;
 ///
 /// ```
 /// use forms::{Row, RowKind, View};
-/// use forms_tui::FormsWidget;
+/// use forms::widgets::FormsWidget;
 /// use ratatui_core::buffer::Buffer;
 /// use ratatui_core::layout::Rect;
 /// use ratatui_core::widgets::Widget;
@@ -667,12 +666,12 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use forms::{Editor, EditorKind, Row, RowKind, View};
+    use crate::{Editor, EditorKind, Row, RowKind, View};
     use ratatui_core::backend::TestBackend;
     use ratatui_core::buffer::Buffer;
     use ratatui_core::terminal::Terminal;
 
-    use crate::{FormsWidget, Theme};
+    use crate::widgets::{FormsWidget, Theme};
 
     /// Renders one view into an off-screen backend and returns the cells.
     fn render(view: &View, width: u16, height: u16) -> Buffer {

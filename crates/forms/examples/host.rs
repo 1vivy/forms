@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEventKind, KeyModifiers};
+use forms::widgets::FormsWidget;
 use forms::{
     Choice, Error, Form, FormId, FormSet, Input, Provider, Question, QuestionFlags, QuestionId,
     Response, RowKind, Session, Statement, Storage, Value, VarStore, VarStoreId, VarStoreKind,
     Width,
 };
-use forms_tui::FormsWidget;
 use ratatui::DefaultTerminal;
 use ratatui::backend::TestBackend;
 

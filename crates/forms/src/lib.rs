@@ -14,8 +14,7 @@
 //! - [`Session`] is the navigation state for one front end. It turns
 //!   [`Input`] into provider calls and produces a [`View`] that a renderer
 //!   draws. It draws nothing itself.
-//!
-//! `hii-ifr` encodes and decodes this model as IFR and string packages.
+//! - [`widgets`] draws that `View` as a setup page through ratatui.
 //!
 //! # Examples
 //!
@@ -41,6 +40,8 @@
 extern crate alloc;
 
 mod session;
+
+pub mod widgets;
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 

@@ -1,6 +1,6 @@
 //! Colours and styles for the setup page.
 
-use forms::RowKind;
+use crate::RowKind;
 use ratatui_core::style::{Color, Modifier, Style};
 
 /// The colours and styles of a setup page.
@@ -11,7 +11,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 /// # Examples
 ///
 /// ```
-/// use forms_tui::Theme;
+/// use forms::widgets::Theme;
 /// use ratatui_core::style::Color;
 ///
 /// let mut theme = Theme::default();

@@ -1,5 +1,5 @@
-# Stable. odp-platform-qcom links forms, hii-abi and hii-ifr into Patina
-# firmware on the same pin; no crate here uses a feature gate.
+# Stable. odp-platform-qcom links forms into Patina firmware on the same pin;
+# no crate here uses a feature gate.
 [toolchain]
 channel = "1.95.0"
 profile = "minimal"

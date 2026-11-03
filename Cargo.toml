@@ -2,11 +2,6 @@
 resolver = "3"
 members = [
     "crates/forms",
-    "crates/forms-tui",
-    "crates/ratatui-gop",
-    "crates/hii-abi",
-    "crates/hii-ifr",
-    "crates/hii-uefi",
 ]
 
 [workspace.package]
@@ -17,17 +12,10 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 forms = { path = "crates/forms" }
-forms-tui = { path = "crates/forms-tui" }
-ratatui-gop = { path = "crates/ratatui-gop" }
-hii-abi = { path = "crates/hii-abi" }
-hii-ifr = { path = "crates/hii-ifr" }
-hii-uefi = { path = "crates/hii-uefi" }
 ratatui-core = { version = "0.1.2", default-features = false }
 ratatui-widgets = { version = "0.3.2", default-features = false }
 ratatui = { version = "0.30.2", default-features = false }
 crossterm = "0.29.0"
-uefi = { version = "0.41.0", default-features = false }
-uefi-raw = "0.17.0"
 
 [workspace.lints.rust]
 missing_docs = "deny"

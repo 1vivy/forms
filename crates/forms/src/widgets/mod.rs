@@ -1,19 +1,19 @@
-//! Setup-page rendering for the forms model.
+//! Setup-page rendering for a [`View`](crate::View).
 //!
-//! This crate draws an [`forms::View`] the way a PC setup page looks: a
-//! title bar, a breadcrumb path, a row list with the prompt on the left and
-//! the value on the right, a selection highlight, a help pane, a message line,
-//! a key-hint footer and a centered editor as a modal.
+//! This module draws a page the way a PC setup page looks: a title bar, a
+//! breadcrumb path, a row list with the prompt on the left and the value on the
+//! right, a selection highlight, a help pane, a message line, a key-hint footer
+//! and a centered editor as a modal.
 //!
-//! The crate is `no_std` and needs allocation only. The same widget therefore
-//! serves a UEFI driver, a UEFI application and a Linux program; only the
-//! ratatui backend and the input source differ.
+//! It needs allocation only. The same widget therefore serves a UEFI
+//! application and a Linux program; only the ratatui backend and the input
+//! source differ.
 //!
 //! # Examples
 //!
 //! ```
 //! use forms::View;
-//! use forms_tui::FormsWidget;
+//! use forms::widgets::FormsWidget;
 //! use ratatui_core::buffer::Buffer;
 //! use ratatui_core::layout::Rect;
 //! use ratatui_core::widgets::Widget;
@@ -32,9 +32,6 @@
 //! FormsWidget::new(&view).render(area, &mut buffer);
 //! assert_eq!(buffer[(0, 0)].symbol(), "┌");
 //! ```
-#![no_std]
-
-extern crate alloc;
 
 mod theme;
 mod widget;
