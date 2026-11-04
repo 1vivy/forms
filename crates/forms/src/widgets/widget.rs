@@ -1,6 +1,6 @@
 //! The widget that draws one setup page.
 
-use alloc::{format, string::String};
+use alloc::{format, string::String, vec::Vec};
 use ratatui_core::{
     buffer::Buffer,
     layout::Rect,
@@ -28,9 +28,12 @@ use crate::{Editor, EditorKind, Row, RowKind, View, widgets::Theme};
 /// separates them, and the value ends at the inner right edge. Text that does
 /// not fit is cut at a grapheme boundary and ends with `~`, so a clipped value
 /// is visible as clipped. A read-only `RowKind::Info` value wraps into the
-/// value column instead, and takes one screen line per wrapped part. Key hints
-/// are centered with at least one blank cell at each edge, and the widget
-/// picks the longest hint form that fits the width.
+/// value column at word boundaries instead, and takes one screen line per
+/// wrapped part. A value on one line keeps its right alignment; a wrapped
+/// value starts at the left edge of its column, and a word wider than the
+/// column breaks at a grapheme boundary. Key hints are centered with at least
+/// one blank cell at each edge, and the widget picks the longest hint form
+/// that fits the width.
 ///
 /// # Examples
 ///
@@ -295,21 +298,30 @@ fn render_row(row: &Row, area: Rect, buf: &mut Buffer, theme: &Theme, selected: 
 
 /// Draws a read-only value, wrapped into the value column.
 ///
-/// A row that runs out of lines ends with `~`, so clipped text stays
-/// visible as clipped text.
+/// A value that fits on one line keeps its right alignment. A value that
+/// wraps starts at the left edge of the column, so the block reads as one
+/// paragraph. A row that runs out of lines ends with `~`, so clipped text
+/// stays visible as clipped text.
 fn render_info_value(row: &Row, area: Rect, buf: &mut Buffer, style: Style) {
-    let mut lines = wrapped(&row.value, area.width).peekable();
-    for line in 0..area.height {
-        let Some(text) = lines.next() else {
-            break;
-        };
-        let clipped = line + 1 == area.height && lines.peek().is_some();
+    if area.is_empty() {
+        return;
+    }
+    let lines: Vec<&str> = wrapped(&row.value, area.width).collect();
+    let left = lines.len() > 1;
+    for (index, text) in lines.iter().take(usize::from(area.height)).enumerate() {
+        let line = index as u16;
+        let clipped = index + 1 == usize::from(area.height) && lines.len() > index + 1;
         let width = if clipped {
             area.width.saturating_sub(2)
         } else {
             area.width
         };
-        put_clipped(buf, Rect::new(area.x, area.y + line, width, 1), text, style);
+        let target = Rect::new(area.x, area.y + line, width, 1);
+        if left {
+            put_left(buf, target, text, style);
+        } else {
+            put_clipped(buf, target, text, style);
+        }
         if clipped && area.width >= 2 {
             put(
                 buf,
@@ -558,23 +570,50 @@ fn columns(width: u16) -> (u16, u16) {
     (width.saturating_sub(value).saturating_sub(1), value)
 }
 
-/// Splits text at grapheme boundaries without allocating line buffers.
+/// Splits text into display lines no wider than `width`.
 ///
-/// A word is not kept together. Read-only values are status text, and a
-/// break at the column edge keeps every grapheme inside its column.
+/// A line breaks after the last word that fits, so words stay whole. A word
+/// wider than the column breaks at a grapheme boundary. One grapheme wider
+/// than `width` still takes a line of its own, so the split never stalls.
 fn wrapped(text: &str, width: u16) -> impl Iterator<Item = &str> {
     let width = usize::from(width).max(1);
     text.split('\n').flat_map(move |line| {
         let mut remaining = Some(line);
         core::iter::from_fn(move || {
             let text = remaining.take()?;
-            let end = wrap_line(text, width);
-            if end < text.len() {
-                remaining = Some(&text[end..]);
-            }
-            Some(&text[..end])
+            let (line, rest) = split_line(text, width);
+            remaining = rest;
+            Some(line)
         })
     })
+}
+
+/// Splits the first display line of `text` and returns it with the rest.
+///
+/// The line keeps whole words while one fits. The rest drops the spaces that
+/// separated the words.
+fn split_line(text: &str, width: usize) -> (&str, Option<&str>) {
+    let end = wrap_line(text, width);
+    if end >= text.len() {
+        return (text, None);
+    }
+    let Some(at) = break_at(text, end) else {
+        return (&text[..end], Some(&text[end..]));
+    };
+    let rest = text[at..].trim_start_matches(' ');
+    if rest.is_empty() {
+        (&text[..at], None)
+    } else {
+        (&text[..at], Some(rest))
+    }
+}
+
+/// Returns the offset of the last space inside the first `end` bytes.
+///
+/// A space at offset zero is not a break, so the line keeps a grapheme and
+/// the split always advances.
+fn break_at(text: &str, end: usize) -> Option<usize> {
+    text[..end].rfind(' ').filter(|at| *at > 0)
 }
 
 /// Returns the end byte offset of the first line of `text` that fits `width`.
@@ -644,6 +683,17 @@ fn put_clipped(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
         usize::from(width),
         style,
     );
+}
+
+/// Left-aligns text and drops the tail without a marker.
+///
+/// The caller draws its own marker, so a wrapped block shows one `~` only.
+fn put_left(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
+    if area.is_empty() {
+        return;
+    }
+    let width = Span::raw(text).width().min(usize::from(area.width)) as u16;
+    buf.set_stringn(area.x, area.y, text, usize::from(width), style);
 }
 
 /// Draws one line and marks clipped text with an ASCII tilde.
@@ -917,27 +967,118 @@ mod tests {
         );
     }
 
+    /// Returns the text of the value column of `count` lines from `y`.
+    fn value_lines(texts: &[String], y: usize, count: usize) -> Vec<String> {
+        let value = (usize::from(PHONE) - 2) / 2;
+        let start = usize::from(PHONE) - 1 - value;
+        (0..count)
+            .map(|line| cell_text(&texts[y + line], start, value).trim_end().into())
+            .collect()
+    }
+
     #[test]
-    fn read_only_value_wraps_and_keeps_every_character() {
+    fn read_only_value_wraps_and_keeps_its_words() {
         let view = status_page(Some(0), 0);
         let buffer = render(&view, PHONE, 14);
         let texts = lines(&buffer);
         let y = row_of(&texts, "T2 state");
-        // The value column is half of the inner width and ends at the border.
-        let value = (usize::from(PHONE) - 2) / 2;
-        let start = usize::from(PHONE) - 1 - value;
-        let first = cell_text(&texts[y], start, value);
-        let second = cell_text(&texts[y + 1], start, value);
-        let joined = format!("{}{}", first.trim_end(), second.trim());
+        let parts = value_lines(&texts, y, 2);
         assert_eq!(
-            joined, "T2 has not run in this boot",
-            "the wrapped value keeps the whole status: {texts:?}"
+            parts.join(" "),
+            "T2 has not run in this boot",
+            "the wrapped value breaks between whole words: {texts:?}"
         );
         let theme = Theme::default();
         assert_eq!(
             selected_rows(&buffer, &theme),
             [y, y + 1],
             "one wrapped row covers both of its lines: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_value_starts_at_the_left_edge() {
+        let mut view = status_page(Some(0), 0);
+        let status = "T2 has not run in this boot. The recovery page waits for it.";
+        view.rows[0].value = status.into();
+        let buffer = render(&view, PHONE, 14);
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "T2 state");
+        let parts = value_lines(&texts, y, 3);
+        assert_eq!(
+            parts.join(" "),
+            status,
+            "every break falls between words: {texts:?}"
+        );
+        let left = usize::from(PHONE) - 1 - (usize::from(PHONE) - 2) / 2;
+        assert_eq!(
+            parts[0].as_str(),
+            "T2 has not run in this",
+            "the first line starts at the left edge: {texts:?}"
+        );
+        assert_eq!(
+            cell_text(&texts[y], left, 2),
+            "T2",
+            "the block shares one left edge: {texts:?}"
+        );
+        assert_eq!(
+            cell_text(&texts[y + 1], left, 2),
+            "bo",
+            "the second line shares the left edge: {texts:?}"
+        );
+        assert!(
+            value_lines(&texts, y + 3, 1)[0].is_empty(),
+            "the block stops after its last line: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_value_stays_right_aligned() {
+        let mut view = status_page(Some(0), 0);
+        view.rows[0].value = "Not run".into();
+        let buffer = render(&view, PHONE, 14);
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "T2 state");
+        let right = usize::from(PHONE) - 2;
+        assert_eq!(
+            cell_text(&texts[y], right - 6, 7),
+            "Not run",
+            "a short value ends at the inner right edge: {:?}",
+            texts[y]
+        );
+        assert_eq!(
+            texts[y].chars().nth(right + 1),
+            Some('\u{2502}'),
+            "the border is intact: {:?}",
+            texts[y]
+        );
+    }
+
+    #[test]
+    fn word_wider_than_the_column_breaks_at_graphemes() {
+        let mut view = status_page(Some(0), 0);
+        let word = "supercalifragilisticexpialidocious";
+        view.rows[0].value = word.into();
+        let buffer = render(&view, PHONE, 14);
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "T2 state");
+        let value = (usize::from(PHONE) - 2) / 2;
+        let parts = value_lines(&texts, y, 2);
+        assert_eq!(
+            parts.concat(),
+            word,
+            "the long word keeps every character: {texts:?}"
+        );
+        assert_eq!(
+            parts[0].chars().count(),
+            value,
+            "the long word fills the column first: {texts:?}"
+        );
+        let left = usize::from(PHONE) - 1 - value;
+        assert_eq!(
+            cell_text(&texts[y + 1], left, 2),
+            "li",
+            "the rest of the word starts at the left edge: {texts:?}"
         );
     }
 
