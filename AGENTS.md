@@ -20,9 +20,14 @@ Cargo writes to `out/cargo` (`.cargo/config.toml`).
 | `forms` model | `core` + `alloc` only. No firmware, no HII. |
 | `forms::Session` | `core` + `alloc` only. Turns inputs into provider calls and views. Draws nothing. |
 | `forms::widgets` | Adds `ratatui-core` and `ratatui-widgets` only. Holds no session state and no firmware call. |
+| `forms-uefi` | Display and input only. Holds no page, no HII type and no log line. |
+| `hii-abi` | UEFI HII package and IFR layouts. No dependency. |
+| `hii-ifr` | IFR and HII package codec. Depends on `forms` and `hii-abi`. |
+| `hii-uefi` | `forms::Provider` over the HII database. Depends on `uefi-raw`. |
 
-The engine never depends on a `hii-*` crate; it names no firmware type. Keep
-model types in the crate root and drawing in `widgets`.
+The engine never depends on a `hii-*` crate; it names no firmware type. A
+front end adds a `hii-*` crate only when its host publishes HII. Keep model
+types in the crate root and drawing in `widgets`.
 
 ## Rust version
 

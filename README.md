@@ -5,12 +5,11 @@ Rust.
 
 The engine describes setup pages (formsets, forms, questions, conditions) and
 keeps the navigation state of one front end. One widget draws that state as a
-PC setup page. A front end supplies the key strokes and the ratatui backend;
-this repository supplies neither firmware calls nor a console.
+PC setup page. A front end supplies the key strokes and the ratatui backend.
 
-No crate here depends on UEFI. A Linux program uses the same crate alone, and a
-UEFI front end pairs it with its own text backend (see `setup` in
-`odp-platform-qcom_bootstrap`).
+The core crates have no firmware dependency, so a Linux program and a UEFI
+image use the same engine. `forms-uefi` supplies the UEFI display and input
+front end. The `hii-*` crates are optional HII adapters.
 
 ## Structure
 
@@ -19,14 +18,21 @@ UEFI front end pairs it with its own text backend (see `setup` in
 | `forms` | model | Formsets, forms, statements, questions, values, the `Provider` trait | `no_std` + `alloc`, any target |
 | `forms::Session` | session | Navigation state: `Input` in, `Event` and `View` out | `no_std` + `alloc`, any target |
 | `forms::widgets` | view | `FormsWidget` and `Theme`: draw a `View` as a setup page | `no_std` + `alloc`, any target |
+| `forms-uefi` | front end | UEFI display and input: graphics output with a text console fallback, `KeyMap`, `Shell` | UEFI targets, host build for the key map tests |
+| `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
+| `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
+| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database | UEFI targets |
 
 The crate is one unit because the parts are useless apart: a session without a
 model has nothing to navigate, and a widget without a view has nothing to draw.
 The session draws nothing, and the widget holds no state.
 
-HII bindings are not part of this repository. `SendForm()`-style browsing, the
-IFR codec and the HII database client left with the browser work and return only
-when an external consumer exists.
+HII is an optional capability, not a foundation. `forms` and `forms-uefi` name
+no HII type. A front end checks the HII database once and adds a `hii-uefi`
+provider when the firmware publishes one. maOS browses the firmware formsets in
+its Firmware Settings page. ODP `opq` initializes and repairs the inherited HII
+stack, then shows its own pages through its native provider. A host without HII
+keeps its native pages.
 
 ## Navigation
 
@@ -85,10 +91,25 @@ Check three things in the printed frame:
 - Opening an editor changes the page footer without adding hints to its border.
 - A long read-only value wraps, and a clipped value ends with `~`.
 
+## Use on UEFI
+
+A UEFI image implements `forms::Provider` over its own facts and a
+`forms_uefi::Shell`. The shell receives one description of the display and
+every turn, so it can run a boot timer and act on page commands. The image
+calls `forms_uefi::run` with the default keyboard map, or
+`forms_uefi::run_with` with another map such as `forms_uefi::map_key_phone` on
+a phone.
+
+The front end draws on the graphics output when the firmware publishes one, and
+on the inherited text console otherwise. It prefers Text Input Ex and falls
+back to basic console input on the same handle. Display and input are
+independent: graphics without Text Input Ex, or text without graphics output,
+still works.
+
 ## Build and check
 
-Rust 1.95.0 stable (`rust-toolchain.toml`). No crate uses a feature gate,
-because Patina firmware links `forms` at the same pin.
+Rust 1.95.0 stable (`rust-toolchain.toml`). The `forms` crate uses no feature
+gate, because Patina firmware links it at the same pin.
 
 ```sh
 cargo fmt --check
@@ -98,3 +119,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
 `--all-targets` also covers the host example of the `forms` crate.
+
+Check the front end for the UEFI targets that rustup has installed:
+
+```sh
+cargo check -p forms-uefi --target x86_64-unknown-uefi
+cargo check -p forms-uefi --target aarch64-unknown-uefi
+```
