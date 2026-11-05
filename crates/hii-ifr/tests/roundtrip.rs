@@ -207,6 +207,116 @@ fn round_trip_keeps_the_model() {
     assert_eq!(sets, vec![set]);
 }
 
+/// Builds a formset with one form and the given stores and items.
+fn page(varstores: Vec<VarStore>, items: Vec<Item>) -> FormSet {
+    FormSet {
+        guid: [0x5A; 16],
+        title: "Buffer page".into(),
+        help: String::new(),
+        class_guids: Vec::new(),
+        varstores,
+        forms: vec![Form {
+            id: FormId(1),
+            title: "Main".into(),
+            items,
+        }],
+    }
+}
+
+#[test]
+fn buffer_store_round_trip_keeps_guid_name_and_size() {
+    let store = VarStore {
+        id: VarStoreId(7),
+        guid: [
+            0x90, 0x81, 0x72, 0x63, 0x54, 0x45, 0x36, 0x27, 0x18, 0x09, 0xFA, 0xEB, 0xDC, 0xCD,
+            0xBE, 0xAF,
+        ],
+        name: "SetupBuffer".into(),
+        size: 0x0123,
+        kind: VarStoreKind::Buffer,
+    };
+    let set = page(vec![store.clone()], Vec::new());
+    let decoded = decode(&encode(&set, [0x33; 16]).expect("encode")).expect("decode");
+
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0].varstores.len(), 1);
+    let buffer = &decoded[0].varstores[0];
+    assert_eq!(buffer.id, store.id);
+    assert_eq!(buffer.guid, store.guid);
+    assert_eq!(buffer.name, "SetupBuffer");
+    assert_eq!(buffer.size, 0x0123);
+    assert_eq!(buffer.kind, VarStoreKind::Buffer);
+}
+
+#[test]
+fn offset_questions_round_trip_with_their_store_and_offset() {
+    let at = |varstore, offset| Storage::Offset {
+        varstore: VarStoreId(varstore),
+        offset,
+    };
+    let first = VarStore {
+        id: VarStoreId(4),
+        guid: [0x14; 16],
+        name: "PrimaryBuffer".into(),
+        size: 0x40,
+        kind: VarStoreKind::Buffer,
+    };
+    let second = VarStore {
+        id: VarStoreId(9),
+        guid: [0x29; 16],
+        name: "SecondaryBuffer".into(),
+        size: 0x80,
+        kind: VarStoreKind::Buffer,
+    };
+    let items = vec![
+        Item::from(Statement::Checkbox {
+            question: question(0x31, at(4, 0x0002)),
+            default: true,
+        }),
+        Item::from(Statement::Numeric {
+            question: question(0x32, at(9, 0x0002)),
+            width: Width::U16,
+            minimum: 1,
+            maximum: 0x0FFF,
+            step: 3,
+        }),
+        Item::from(Statement::OneOf {
+            question: question(0x33, at(4, 0x0010)),
+            width: Width::U16,
+            choices: vec![
+                Choice {
+                    text: "Low".into(),
+                    value: 1,
+                    default: false,
+                },
+                Choice {
+                    text: "High".into(),
+                    value: 2,
+                    default: true,
+                },
+            ],
+        }),
+        Item::from(Statement::TextInput {
+            question: question(0x34, at(9, 0x0020)),
+            minimum: 2,
+            maximum: 12,
+        }),
+    ];
+    let set = page(vec![first, second], items);
+    let decoded = decode(&encode(&set, [0x44; 16]).expect("encode")).expect("decode");
+
+    assert_eq!(decoded, vec![set]);
+    let offsets: Vec<_> = decoded[0].forms[0]
+        .items
+        .iter()
+        .map(|item| item.statement.question().expect("question").storage.clone())
+        .collect();
+    assert_eq!(
+        offsets,
+        vec![at(4, 0x0002), at(9, 0x0002), at(4, 0x0010), at(9, 0x0020)]
+    );
+}
+
 #[test]
 fn encode_writes_a_forms_strings_and_end_package() {
     let bytes = encode(&model(), [0x55; 16]).expect("encode");
