@@ -38,6 +38,9 @@ same `< Back` row and wraps the same way, so Enter on that row cancels the
 editor and leaves the committed value unchanged.
 `Session::enter(guid)` opens one formset and pins it: Back on its entry form
 ends the session instead of showing the list.
+`with_entry_back_row(false)` removes only the pinned entry form's Back row.
+`with_readable_rows(true)` lets Up and Down select information rows, so long
+information pages scroll and show their help. Enter on these rows has no effect.
 
 Navigation and refresh preserve both the provider handle and the formset GUID.
 Different providers can publish the same GUID without sharing question state.
@@ -53,6 +56,8 @@ value column instead, and the row takes one screen line per wrapped part. The
 selection still follows rows, not lines. Key hints are centered with one blank
 cell at each edge, and the widget uses the longest hint that fits the width. The
 page footer changes with the active editor; popups do not repeat those hints.
+Rows with no value use the full width for their prompt. Headings draw a rule
+to the right edge. Set `Theme::heading_rule` to `false` to omit the rule.
 
 `Theme` holds the colours and styles of one page. A front end starts from
 `Theme::default()` and changes single fields.

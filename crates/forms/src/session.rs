@@ -181,6 +181,9 @@ pub struct Session<H> {
     base: usize,
     /// Every page except the formset list ends with a Back row.
     back_row: bool,
+    entry_back_row: bool,
+    /// Read-only rows can be selected, so a long information page scrolls.
+    readable_rows: bool,
 }
 
 impl<H: Copy + Eq> Session<H> {
@@ -201,6 +204,8 @@ impl<H: Copy + Eq> Session<H> {
             message: None,
             base: 0,
             back_row: true,
+            entry_back_row: true,
+            readable_rows: false,
         }
     }
 
@@ -217,6 +222,38 @@ impl<H: Copy + Eq> Session<H> {
     /// ```
     pub fn with_back_row(mut self, back_row: bool) -> Self {
         self.back_row = back_row;
+        self
+    }
+
+    /// Chooses whether the pinned entry form has a Back row. The default is `true`.
+    ///
+    /// This setting applies only to the entry form opened by [`Session::enter`].
+    /// Other pages use [`Session::with_back_row`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let _session = forms::Session::<u32>::new(Vec::new()).with_entry_back_row(false);
+    /// ```
+    pub fn with_entry_back_row(mut self, entry_back_row: bool) -> Self {
+        self.entry_back_row = entry_back_row;
+        self
+    }
+
+    /// Chooses whether read-only rows can be selected. The default is `false`.
+    ///
+    /// A page of read-only information scrolls only as far as the selection
+    /// moves. With this setting, Up and Down also stop on `RowKind::Info` rows,
+    /// the help pane shows their help, and Enter on them changes nothing.
+    /// Headings stay unselectable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let _session = forms::Session::<u32>::new(Vec::new()).with_readable_rows(true);
+    /// ```
+    pub fn with_readable_rows(mut self, readable_rows: bool) -> Self {
+        self.readable_rows = readable_rows;
         self
     }
 
@@ -424,6 +461,10 @@ impl<H: Copy + Eq> Session<H> {
         let Some(question) = statement.question() else {
             return Event::None;
         };
+        if question.flags.contains(QuestionFlags::READ_ONLY) {
+            // A read-only question is selectable only as a readable row.
+            return Event::None;
+        }
         if matches!(statement, Statement::Action { .. }) {
             let result = provider.action(*handle, set, question);
             return self.result(result);
@@ -597,14 +638,18 @@ impl<H: Copy + Eq> Session<H> {
                         prompt,
                         value,
                         kind,
-                        enabled: !gray && !matches!(kind, RowKind::Heading | RowKind::Info),
+                        enabled: !gray
+                            && kind != RowKind::Heading
+                            && (self.readable_rows || kind != RowKind::Info),
                         uncertain: uncertain_hide || uncertain_gray,
                     },
                     help,
                 })
             })
             .collect();
-        if self.back_row {
+        // The pinned entry form keeps a Back row only when the session allows it.
+        let entry = self.base > 0 && self.pages.len() == self.base;
+        if self.back_row && (self.entry_back_row || !entry) {
             entries.push(Entry {
                 source: BACK_ROW,
                 row: Row {
@@ -1556,6 +1601,111 @@ mod tests {
         // The Back row of the pinned form exits too.
         to_last(&mut session, &mut memory);
         assert_eq!(session.input(Input::Enter, &mut memory), Event::Exit);
+    }
+
+    #[test]
+    fn entry_back_row_only_hides_the_pinned_entry_row() {
+        let set = formset(
+            0x60,
+            "Pinned",
+            vec![
+                form(
+                    1,
+                    "Main",
+                    vec![item(Statement::Goto {
+                        prompt: "More".into(),
+                        help: String::new(),
+                        form: FormId(2),
+                        question: None,
+                    })],
+                ),
+                form(
+                    2,
+                    "Extra",
+                    vec![item(Statement::Checkbox {
+                        question: question(1, "Flag"),
+                        default: false,
+                    })],
+                ),
+            ],
+        );
+        let mut memory = Memory::default();
+        let mut session = Session::new(vec![(1, set.clone())]).with_entry_back_row(false);
+        assert!(session.enter(&[0x60; 16]));
+        let view = session.view(&mut memory);
+        assert_eq!(view.title, "Main");
+        assert!(view.rows.iter().all(|row| row.kind != RowKind::Back));
+        // A page above the pinned entry form keeps the ordinary Back row.
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        let view = session.view(&mut memory);
+        assert_eq!(view.title, "Extra");
+        assert_eq!(view.rows.last().map(|row| row.kind), Some(RowKind::Back));
+        // Back returns to the pinned form, which has no Back row, and Back
+        // on the pinned form exits.
+        assert_eq!(session.input(Input::Back, &mut memory), Event::Changed);
+        assert!(
+            session
+                .view(&mut memory)
+                .rows
+                .iter()
+                .all(|row| row.kind != RowKind::Back)
+        );
+        assert_eq!(session.input(Input::Back, &mut memory), Event::Exit);
+        // The default keeps the Back row on the pinned form.
+        let mut memory = Memory::default();
+        let mut session = Session::new(vec![(1, set)]);
+        assert!(session.enter(&[0x60; 16]));
+        assert_eq!(
+            session.view(&mut memory).rows.last().map(|row| row.kind),
+            Some(RowKind::Back)
+        );
+    }
+
+    #[test]
+    fn readable_rows_select_information_without_an_effect() {
+        let set = formset(
+            0x61,
+            "Facts",
+            vec![form(
+                1,
+                "Facts",
+                vec![
+                    item(Statement::Subtitle {
+                        text: "Group".into(),
+                    }),
+                    item(Statement::Text {
+                        prompt: "Fact".into(),
+                        help: "About the fact.".into(),
+                        value: "Known".into(),
+                    }),
+                    item(Statement::Checkbox {
+                        question: Question {
+                            flags: QuestionFlags::READ_ONLY,
+                            ..question(1, "Locked")
+                        },
+                        default: false,
+                    }),
+                ],
+            )],
+        );
+        let mut memory = Memory::default();
+        memory.put(1, Value::Bool(true));
+        let mut session = Session::new(vec![(1, set.clone())]).with_readable_rows(true);
+        assert!(session.enter(&[0x61; 16]));
+        let view = session.view(&mut memory);
+        assert_eq!(view.selected, Some(1), "the heading stays unselectable");
+        assert_eq!(view.help, "About the fact.");
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::None);
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(session.view(&mut memory).rows[2].kind, RowKind::Info);
+        // Enter on a read-only question opens no editor and writes nothing.
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::None);
+        assert!(session.view(&mut memory).editor.is_none());
+        assert!(memory.writes.is_empty());
+        // The default keeps information rows out of the selection.
+        let mut session = Session::new(vec![(1, set)]);
+        assert!(session.enter(&[0x61; 16]));
+        assert_eq!(session.view(&mut memory).selected, Some(3), "only Back");
     }
 
     #[test]

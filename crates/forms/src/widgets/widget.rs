@@ -256,9 +256,21 @@ fn render_row(row: &Row, area: Rect, buf: &mut Buffer, theme: &Theme, selected: 
     buf.set_style(area, style);
     if matches!(row.kind, RowKind::Heading) {
         put(buf, area, &row.prompt, style);
+        if theme.heading_rule {
+            let text = Span::raw(row.prompt.as_str()).width();
+            let start = text.saturating_add(1).min(usize::from(area.width)) as u16;
+            for x in area.x + start..area.right() {
+                buf[(x, area.y)].set_symbol("─").set_style(style);
+            }
+        }
         return;
     }
-    let (prompt_columns, value_columns) = columns(area.width);
+    // A row without a value uses the full width for its prompt.
+    let (prompt_columns, value_columns) = if row.value.is_empty() {
+        (area.width, 0)
+    } else {
+        columns(area.width)
+    };
     let opens = matches!(row.kind, RowKind::FormSet | RowKind::Link);
     // An opening row keeps two cells for its arrow, so the arrow never
     // replaces the last prompt character.
@@ -1140,6 +1152,71 @@ mod tests {
             texts[usize::from(height) - 1].chars().nth(1),
             Some('\u{2500}'),
             "the footer sits above the bottom border"
+        );
+    }
+
+    #[test]
+    fn heading_rule_reaches_the_right_edge() {
+        let view = page(Some(1), None);
+        let buffer = render(&view, PHONE, 18);
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "Appearance");
+        let start = 1 + "Appearance".len();
+        assert_eq!(
+            buffer[(start as u16, y as u16)].symbol(),
+            " ",
+            "one blank cell follows the heading text"
+        );
+        let right = PHONE - 2;
+        assert_eq!(
+            buffer[(right, y as u16)].symbol(),
+            "\u{2500}",
+            "the rule reaches the inner right edge: {:?}",
+            texts[y]
+        );
+    }
+
+    #[test]
+    fn heading_rule_can_be_turned_off() {
+        let theme = Theme {
+            heading_rule: false,
+            ..Theme::default()
+        };
+        let view = page(Some(1), None);
+        let backend = TestBackend::new(PHONE, 18);
+        let mut terminal = Terminal::new(backend).expect("the test backend cannot fail");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(FormsWidget::new(&view).with_theme(theme), frame.area());
+            })
+            .expect("the test backend cannot fail");
+        let buffer = terminal.backend().buffer().clone();
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "Appearance");
+        let right = PHONE - 2;
+        assert_eq!(
+            buffer[(right, y as u16)].symbol(),
+            " ",
+            "no rule follows the heading: {:?}",
+            texts[y]
+        );
+    }
+
+    #[test]
+    fn empty_value_row_uses_the_full_width() {
+        let mut view = page(None, None);
+        view.rows.push(row(
+            "Restart the recovery menu of this device",
+            "",
+            RowKind::Action,
+        ));
+        let buffer = render(&view, PHONE, 22);
+        let texts = lines(&buffer);
+        let y = row_of(&texts, "Restart the recovery menu");
+        assert!(
+            texts[y].contains("of this device"),
+            "the prompt keeps the columns of the value area: {:?}",
+            texts[y]
         );
     }
 

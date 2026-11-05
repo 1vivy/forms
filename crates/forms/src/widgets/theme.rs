@@ -30,6 +30,8 @@ pub struct Theme {
     pub title: Color,
     /// The colour of headings.
     pub heading: Color,
+    /// Draws a horizontal rule after each heading when `true`.
+    pub heading_rule: bool,
     /// The colour of read-only information.
     pub info: Color,
     /// The colour of a link to another page.
@@ -56,6 +58,7 @@ impl Default for Theme {
             border: Color::LightBlue,
             title: Color::White,
             heading: Color::Yellow,
+            heading_rule: true,
             info: Color::Gray,
             link: Color::LightCyan,
             help: Color::Gray,
