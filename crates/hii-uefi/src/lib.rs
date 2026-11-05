@@ -10,21 +10,28 @@
 //! application (with or without `std`) and any other UEFI image can use it.
 //!
 //! - `hii` implements the provider.
+//! - `producer` builds and parses configuration data for a published formset.
+//! - `publish` registers a provider through HII Config Access on UEFI.
 //! - `raw` holds the boot-services calls that the provider needs.
 //! - `text` converts strings at the firmware boundary.
 //! - `hex` encodes and decodes hexadecimal byte strings for name/value stores.
 //! - `shape` maps a statement to the width and value type that firmware expects.
 //!
-//! Modules that call firmware exist on UEFI targets only.
+//! Modules that call firmware exist on UEFI targets only. The producer layout
+//! and configuration codec build on the host, so their tests run with `cargo
+//! test`.
 #![no_std]
 
 extern crate alloc;
 
 pub mod hex;
+pub mod producer;
 pub mod shape;
 pub mod text;
 
 #[cfg(target_os = "uefi")]
 pub mod hii;
+#[cfg(target_os = "uefi")]
+pub mod publish;
 #[cfg(target_os = "uefi")]
 pub mod raw;
