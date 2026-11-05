@@ -1,0 +1,17 @@
+[package]
+name = "forms-uefi"
+description = "A UEFI display and input front end for one forms session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+forms = { workspace = true }
+ratatui-core = { workspace = true }
+uefi = { workspace = true, features = ["alloc"] }
+mousefood = { workspace = true }
+
+[lints]
+workspace = true
