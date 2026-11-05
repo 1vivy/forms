@@ -37,6 +37,9 @@ use crate::raw::Boot;
 /// The vendor device path: type 1, sub-type 4, GUID, end node.
 const PATH_LENGTH: usize = 24;
 
+/// The length of the vendor node: four header bytes and one GUID.
+const VENDOR_NODE_LENGTH: u8 = 20;
+
 /// The protocol context of one registration.
 ///
 /// `access` is the first field, so the protocol pointer and the context
@@ -99,7 +102,7 @@ impl<P: Provider + 'static> Registration<P> {
             .map_err(|_| Status::INVALID_PARAMETER)?;
 
         let mut path = [0u8; PATH_LENGTH];
-        path[..4].copy_from_slice(&[1, 4, PATH_LENGTH as u8, 0]);
+        path[..4].copy_from_slice(&[1, 4, VENDOR_NODE_LENGTH, 0]);
         path[4..20].copy_from_slice(&guid);
         path[20..].copy_from_slice(&[0x7f, 0xff, 4, 0]);
 
