@@ -23,7 +23,7 @@ Cargo writes to `out/cargo` (`.cargo/config.toml`).
 | `forms-uefi` | Display and input only. Holds no page, no HII type and no log line. |
 | `hii-abi` | UEFI HII package and IFR layouts. No dependency. |
 | `hii-ifr` | IFR and HII package codec. Depends on `forms` and `hii-abi`. |
-| `hii-uefi` | `forms::Provider` over the HII database. Depends on `uefi-raw`. |
+| `hii-uefi` | `forms::Provider` over the HII database, and publication through HII Config Access. Depends on `uefi-raw`; the producer codec builds on the host. |
 
 The engine never depends on a `hii-*` crate; it names no firmware type. A
 front end adds a `hii-*` crate only when its host publishes HII. Keep model

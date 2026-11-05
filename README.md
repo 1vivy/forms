@@ -21,7 +21,7 @@ front end. The `hii-*` crates are optional HII adapters.
 | `forms-uefi` | front end | UEFI display and input: graphics output with a text console fallback, `KeyMap`, `Shell` | UEFI targets, host build for the key map tests |
 | `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
 | `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
-| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database | UEFI targets |
+| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, and publication of a `forms::Provider` as a formset | UEFI targets, host build for the producer tests |
 
 The crate is one unit because the parts are useless apart: a session without a
 model has nothing to navigate, and a widget without a view has nothing to draw.
@@ -105,6 +105,61 @@ on the inherited text console otherwise. It prefers Text Input Ex and falls
 back to basic console input on the same handle. Display and input are
 independent: graphics without Text Input Ex, or text without graphics output,
 still works.
+
+## Publish a formset
+
+A driver that owns settings publishes them to the HII database, so the
+firmware setup browser and every HII consumer see one standard formset. The
+driver keeps its own storage.
+
+`hii_uefi::publish::Registration::new` does five steps:
+
+1. `hii_uefi::producer::PreparedFormSet` rewrites the formset so that every
+   value question uses one buffer variable store. The store has identifier
+   1, name `Forms`, the formset GUID and the declared size. Questions keep
+   their form order and take sequential byte offsets.
+2. The adapter encodes the package list with `hii-ifr`.
+3. It installs a vendor device path on a new handle.
+4. It calls `EFI_HII_DATABASE_PROTOCOL.NewPackageList` for that handle.
+5. It installs `EFI_HII_CONFIG_ACCESS_PROTOCOL` on the same handle.
+
+`ExtractConfig` reads every requested question with `Provider::read` and
+builds a `<ConfigResp>`. A `NULL` request or a header-only request means every
+question. `RouteConfig` parses the `<ConfigResp>`, overlays the blocks on the
+current buffer, and calls `Provider::write` for each changed question. A
+provider failure becomes the returned status, and `Progress` points at the
+failing block.
+
+```rust,no_run
+use hii_uefi::publish::Registration;
+use hii_uefi::raw::Boot;
+
+# fn publish<P: forms::Provider + 'static>(boot: Boot, set: forms::FormSet, provider: P, handle: P::Handle)
+#     -> Result<(), uefi_raw::Status> {
+// SAFETY: The driver stays resident until removal succeeds.
+let mut registration = unsafe { Registration::new(boot, set, provider, handle)? };
+// ... use the settings ...
+registration.remove()?;
+# Ok(())
+# }
+```
+
+The provider decides where the values live. The buffer store is only the
+form view of the data. A provider that maps questions to `Opq*` settings can
+publish the same formset that its native pages show.
+
+Limits:
+
+- The producer supports checkboxes, numbers, one-of choices and bounded text.
+  Text takes `maximum * 2` bytes and stores UTF-16.
+- Action questions keep no storage. `Callback` returns `EFI_UNSUPPORTED`, so
+  the HII browser does not run them. A front end that needs actions uses the
+  native provider.
+- Values that the provider refuses do not change the stored data, and the
+  browser shows the returned status.
+- The adapter uses firmware pool memory for the protocol context. A failed
+  removal keeps that memory and the provider alive, because firmware would
+  otherwise hold a stale pointer. Call `remove` before driver unload.
 
 ## Build and check
 
