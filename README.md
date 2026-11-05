@@ -175,6 +175,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 `--all-targets` also covers the host example of the `forms` crate.
 
+`cargo build -p hii-uefi --example smoke --target x86_64-unknown-uefi` builds
+a firmware smoke test. It publishes an in-memory formset, lists it with the
+consumer provider, reads a value, writes a value, and checks that the provider
+saw the write. Boot it in QEMU with OVMF and the serial console shows
+`SMOKE PASS`. The example has the exact image and QEMU commands.
+
 Check the front end for the UEFI targets that rustup has installed:
 
 ```sh
