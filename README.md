@@ -22,6 +22,7 @@ front end. The `hii-*` crates are optional HII adapters.
 | `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
 | `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
 | `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup` | UEFI targets, host build for the producer and popup tests |
+| `forms-examples` | teaching | Compiled example programs and the `Provider` behind them: a templated formset over typed settings, a popup, and action requests | host |
 
 The crate is one unit because the parts are useless apart: a session without a
 model has nothing to navigate, and a widget without a view has nothing to draw.
@@ -122,6 +123,13 @@ feeds key strokes to a `forms::Session` and draws each `forms::View` with
 
 `cargo run -p forms --example host` runs that loop in a terminal over an
 in-memory provider. `--once` draws one frame and prints it.
+
+`crates/forms-examples` holds three compiled example programs for a consumer
+that writes its own provider: a templated formset over typed settings, a popup
+confirm and the handling of action requests. Each program runs on the host and
+prints the events, the requests and the settings records without a terminal.
+[Its README](crates/forms-examples/README.md) gives the commands and the
+lessons.
 
 Draw a frame at the width of a phone screen, and a frame with an open editor:
 
@@ -266,7 +274,8 @@ cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-`--all-targets` also covers the host example of the `forms` crate.
+`--all-targets` also covers the host example of the `forms` crate and the three
+example programs of `crates/forms-examples`.
 
 `cargo build -p hii-uefi --example smoke --target x86_64-unknown-uefi` builds
 a firmware smoke test. It publishes an in-memory formset, lists it with the

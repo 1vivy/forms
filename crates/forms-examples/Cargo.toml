@@ -1,0 +1,27 @@
+[package]
+name = "forms-examples"
+description = "Small compiled examples of the forms engine: a templated formset, a popup and action requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+forms.workspace = true
+
+[dev-dependencies]
+crossterm.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
+
+[[example]]
+name = "settings"
+
+[[example]]
+name = "popup"
+
+[[example]]
+name = "actions"

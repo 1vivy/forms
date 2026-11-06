@@ -269,6 +269,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "forms-examples"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "forms",
+ "ratatui",
+]
+
+[[package]]
 name = "forms-uefi"
 version = "0.1.0"
 dependencies = [

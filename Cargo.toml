@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/forms",
+    "crates/forms-examples",
     "crates/forms-uefi",
     "crates/hii-abi",
     "crates/hii-ifr",
