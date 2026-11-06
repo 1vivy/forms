@@ -14,7 +14,10 @@ use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
 };
 
-use crate::{Editor, EditorKind, Row, RowKind, View, widgets::Theme};
+use crate::{
+    Editor, EditorKind, Row, RowKind, View,
+    widgets::{PopupWidget, Theme},
+};
 
 /// Draws a [`View`] as a setup page.
 ///
@@ -58,6 +61,7 @@ use crate::{Editor, EditorKind, Row, RowKind, View, widgets::Theme};
 ///     help: "Turn the dark theme on.".into(),
 ///     editor: None,
 ///     message: None,
+///     popup: None,
 /// };
 /// let area = Rect::new(0, 0, 40, 14);
 /// let mut buffer = Buffer::empty(area);
@@ -120,18 +124,23 @@ impl Widget for FormsWidget<'_> {
             put(buf, line, message, Style::new().fg(theme.message));
         }
         if let Some(footer) = regions.footer {
-            render_footer(view.editor.as_ref(), footer, buf, &theme);
+            render_footer(view, footer, buf, &theme);
         }
+        let modal_area = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            regions
+                .footer
+                .map_or(inner.height, |footer| footer.y.saturating_sub(inner.y)),
+        );
         if let Some(editor) = &view.editor {
-            let modal_area = Rect::new(
-                inner.x,
-                inner.y,
-                inner.width,
-                regions
-                    .footer
-                    .map_or(inner.height, |footer| footer.y.saturating_sub(inner.y)),
-            );
             render_editor(editor, modal_area, buf, &theme);
+        }
+        if let Some(popup) = &view.popup {
+            PopupWidget::new(popup)
+                .with_theme(theme)
+                .render(modal_area, buf);
         }
     }
 }
@@ -369,21 +378,27 @@ fn render_help(view: &View, area: Rect, buf: &mut Buffer, theme: &Theme) {
 }
 
 /// Draws centered hints with one spare cell at each edge.
-fn render_footer(editor: Option<&Editor>, area: Rect, buf: &mut Buffer, theme: &Theme) {
-    let variants: &[&str] = match editor.map(|editor| &editor.kind) {
-        None => &[
+fn render_footer(view: &View, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    let variants: &[&str] = match (&view.popup, view.editor.as_ref().map(|editor| &editor.kind)) {
+        (Some(popup), _) if popup.kind.selections().len() == 1 => &["Enter Close", "Enter", ""],
+        (Some(_), _) => &[
+            "Left/Right Choose  Enter Select",
+            "Left/Right  Enter",
+            "Enter",
+        ],
+        (None, None) => &[
             "Up/Down Move  Enter Open  Esc Back",
             "Up/Down Move  Enter Open",
             "Up/Down  Enter",
             "Enter",
         ],
-        Some(EditorKind::Choice { .. }) => &[
+        (None, Some(EditorKind::Choice { .. })) => &[
             "Up/Down Choose  Enter Set  Esc Cancel",
             "Up/Down Choose  Enter Set",
             "Up/Down  Enter",
             "Enter",
         ],
-        Some(EditorKind::Number { .. } | EditorKind::Text { .. }) => &[
+        (None, Some(EditorKind::Number { .. } | EditorKind::Text { .. })) => &[
             "Enter Accept  Esc Cancel",
             "Enter Set  Esc Back",
             "Enter Set",
@@ -798,7 +813,48 @@ mod tests {
             help: "Choose a value and press Enter.".into(),
             editor,
             message: None,
+            popup: None,
         }
+    }
+
+    #[test]
+    fn popup_covers_the_page_and_replaces_the_key_hints() {
+        let mut view = page(Some(1), None);
+        view.popup = Some(crate::Popup::new(
+            crate::PopupStyle::Warning,
+            crate::PopupType::YesNo,
+            "Erase the log?",
+        ));
+        let buffer = render(&view, 50, 16);
+        let texts = lines(&buffer);
+        let title = row_of(&texts, "Warning");
+        assert!(title > 0, "the popup sits inside the page: {texts:?}");
+        let message = row_of(&texts, "Erase the log?");
+        assert!(message > title, "the message follows the title: {texts:?}");
+        let buttons = row_of(&texts, "Yes");
+        assert!(
+            buttons > message,
+            "the answers follow the message: {texts:?}"
+        );
+        assert!(texts[buttons].contains("No"));
+        assert!(
+            texts.iter().any(|line| line.contains("Left/Right")),
+            "the popup hint replaces the page hint: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn popup_selection_draws_one_bar() {
+        let mut view = page(None, None);
+        view.popup = Some(crate::Popup::new(
+            crate::PopupStyle::Info,
+            crate::PopupType::OkCancel,
+            "Apply now?",
+        ));
+        let buffer = render(&view, 50, 16);
+        let theme = Theme::default();
+        let highlighted = selected_rows(&buffer, &theme);
+        assert_eq!(highlighted.len(), 1, "one selection bar: {highlighted:?}");
     }
 
     #[test]
@@ -917,6 +973,7 @@ mod tests {
             help: String::new(),
             editor: None,
             message: None,
+            popup: None,
         }
     }
 

@@ -1,8 +1,8 @@
 //! Provider-backed navigation and editing.
 
 use crate::{
-    Error, Expr, FormId, FormSet, Guid, Provider, QuestionFlags, QuestionId, Response, Statement,
-    Value,
+    ActionRequest, Error, Expr, FormId, FormSet, Guid, Popup, PopupSelection, Provider,
+    QuestionFlags, QuestionId, Scope, Statement, Value,
 };
 use alloc::{
     format,
@@ -40,12 +40,14 @@ pub enum Event {
     None,
     /// The local navigation or editor changed.
     Changed,
-    /// A provider returned a request.
-    Response(Response),
+    /// The session acted on a provider request.
+    Response(ActionRequest),
     /// A provider or validation operation failed.
     Failed(Error),
     /// The user left the root page.
     Exit,
+    /// The person answered a popup.
+    Popup(PopupSelection),
 }
 
 /// One visible row.
@@ -142,6 +144,8 @@ pub struct View {
     pub editor: Option<Editor>,
     /// A provider or validation message.
     pub message: Option<String>,
+    /// The open popup, if any.
+    pub popup: Option<Popup>,
 }
 
 #[derive(Clone)]
@@ -184,6 +188,8 @@ pub struct Session<H> {
     entry_back_row: bool,
     /// Read-only rows can be selected, so a long information page scrolls.
     readable_rows: bool,
+    /// The modal popup over the current page, if any.
+    popup: Option<Popup>,
 }
 
 impl<H: Copy + Eq> Session<H> {
@@ -206,6 +212,7 @@ impl<H: Copy + Eq> Session<H> {
             back_row: true,
             entry_back_row: true,
             readable_rows: false,
+            popup: None,
         }
     }
 
@@ -255,6 +262,63 @@ impl<H: Copy + Eq> Session<H> {
     pub fn with_readable_rows(mut self, readable_rows: bool) -> Self {
         self.readable_rows = readable_rows;
         self
+    }
+
+    /// Shows a popup over the current page.
+    ///
+    /// The popup takes every input until the person selects one of its legal
+    /// answers. The page, its selection and its open editor stay unchanged
+    /// underneath it. A front end raises a popup this way when it needs a
+    /// decision, without a second session and without a firmware protocol.
+    /// A second call replaces an open popup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{Input, Popup, PopupSelection, PopupStyle, PopupType, Session};
+    ///
+    /// let mut session = Session::<u32>::new(Vec::new());
+    /// session.open_popup(Popup::new(PopupStyle::Warning, PopupType::YesNo, "Erase?"));
+    /// struct Memory;
+    /// impl forms::Provider for Memory {
+    ///     type Handle = u32;
+    ///     fn formsets(&mut self) -> Result<Vec<(u32, forms::FormSet)>, forms::Error> {
+    ///         Ok(Vec::new())
+    ///     }
+    ///     fn read(
+    ///         &mut self,
+    ///         _handle: u32,
+    ///         _set: &forms::FormSet,
+    ///         _question: &forms::Question,
+    ///     ) -> Result<forms::Value, forms::Error> {
+    ///         Err(forms::Error { code: 1, reason: "no value".into() })
+    ///     }
+    ///     fn write(
+    ///         &mut self,
+    ///         _handle: u32,
+    ///         _set: &forms::FormSet,
+    ///         _question: &forms::Question,
+    ///         _value: &forms::Value,
+    ///     ) -> Result<forms::ActionRequest, forms::Error> {
+    ///         Ok(forms::ActionRequest::None)
+    ///     }
+    ///     fn action(
+    ///         &mut self,
+    ///         _handle: u32,
+    ///         _set: &forms::FormSet,
+    ///         _question: &forms::Question,
+    ///     ) -> Result<forms::ActionRequest, forms::Error> {
+    ///         Ok(forms::ActionRequest::None)
+    ///     }
+    /// }
+    /// let mut provider = Memory;
+    /// assert_eq!(
+    ///     session.input(Input::Enter, &mut provider),
+    ///     forms::Event::Popup(PopupSelection::Yes)
+    /// );
+    /// ```
+    pub fn open_popup(&mut self, popup: Popup) {
+        self.popup = Some(popup);
     }
 
     /// Opens the entry form of the formset with this GUID and pins it.
@@ -365,6 +429,7 @@ impl<H: Copy + Eq> Session<H> {
             help,
             editor: self.editor.as_ref().map(|e| e.1.clone()),
             message: self.message.clone(),
+            popup: self.popup.clone(),
         }
     }
 
@@ -378,7 +443,31 @@ impl<H: Copy + Eq> Session<H> {
     /// Up and Down wrap between the first and the last selectable row. In a
     /// choice editor they wrap the same way, and the last entry is the Back
     /// row, which cancels the editor without a write.
+    ///
+    /// A provider answers a write or an action with an [`ActionRequest`]. The
+    /// session commits or discards the named scope through
+    /// [`Provider::apply`] or [`Provider::discard`], reconnects the controller
+    /// through [`Provider::reconnect`], and leaves the form or the formset when
+    /// the request asks for it. A failed call keeps the page and returns
+    /// [`Event::Failed`].
+    ///
+    /// An open popup takes every input first and returns [`Event::Popup`] when
+    /// the person selects one of its answers. An input that the popup does not
+    /// answer changes nothing else on the page.
     pub fn input<P: Provider<Handle = H>>(&mut self, input: Input, provider: &mut P) -> Event {
+        if let Some(popup) = self.popup.as_mut() {
+            let before = popup.selected;
+            let selection = popup.input(input);
+            if let Some(selection) = selection {
+                self.popup = None;
+                return Event::Popup(selection);
+            }
+            return if popup.selected == before {
+                Event::None
+            } else {
+                Event::Changed
+            };
+        }
         if self.editor.is_some() {
             return self.edit(input, provider);
         }
@@ -436,17 +525,18 @@ impl<H: Copy + Eq> Session<H> {
             return Event::None;
         }
         let page = self.pages.last().expect("page exists");
-        let (handle, set) = self
+        let (handle, guid, form) = (page.handle, page.guid, page.form);
+        let (_, set) = self
             .sets
             .iter()
-            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
+            .find(|s| s.0 == handle && s.1.guid == guid)
             .expect("page formset exists");
-        let statement = &set.form(page.form).expect("page form exists").items[source].statement;
+        let statement = &set.form(form).expect("page form exists").items[source].statement;
         if let Statement::Goto { form, .. } = statement {
             if set.form(*form).is_some() {
                 self.pages.push(Page {
-                    handle: *handle,
-                    guid: set.guid,
+                    handle,
+                    guid,
                     form: *form,
                     selected: None,
                 });
@@ -461,27 +551,28 @@ impl<H: Copy + Eq> Session<H> {
         let Some(question) = statement.question() else {
             return Event::None;
         };
+        let id = question.id;
         if question.flags.contains(QuestionFlags::READ_ONLY) {
             // A read-only question is selectable only as a readable row.
             return Event::None;
         }
         if matches!(statement, Statement::Action { .. }) {
-            let result = provider.action(*handle, set, question);
-            return self.result(result);
+            let result = provider.action(handle, set, question);
+            return self.result(result, handle, guid, form, id, provider);
         }
-        let value = match provider.read(*handle, set, question) {
+        let value = match provider.read(handle, set, question) {
             Ok(value) => value,
             Err(error) => return self.failure(error),
         };
         let kind = match (statement, value) {
             (Statement::Checkbox { .. }, Value::Bool(value)) => {
-                let result = provider.write(*handle, set, question, &Value::Bool(!value));
-                return self.result(result);
+                let result = provider.write(handle, set, question, &Value::Bool(!value));
+                return self.result(result, handle, guid, form, id, provider);
             }
             (Statement::Checkbox { .. }, Value::Number(value)) => {
                 let negated = Value::Number(u64::from(value == 0));
-                let result = provider.write(*handle, set, question, &negated);
-                return self.result(result);
+                let result = provider.write(handle, set, question, &negated);
+                return self.result(result, handle, guid, form, id, provider);
             }
             (Statement::OneOf { choices, .. }, Value::Number(value)) => EditorKind::Choice {
                 choices: choices.iter().map(|c| c.text.clone()).collect(),
@@ -668,23 +759,115 @@ impl<H: Copy + Eq> Session<H> {
         self.message = Some(error.reason.clone());
         Event::Failed(error)
     }
-    fn result(&mut self, result: Result<Response, Error>) -> Event {
-        match result {
-            Err(error) => self.failure(error),
-            Ok(response) => {
-                self.message = match &response {
-                    Response::Message(text) => Some(text.clone()),
-                    Response::Reset => {
-                        Some("A reset is required for the change to take effect".into())
-                    }
-                    _ => None,
-                };
-                if response == Response::Exit {
-                    self.pages.clear();
-                }
-                Event::Response(response)
+    /// Acts on the request that a provider returned for one question.
+    ///
+    /// The browser commits or discards the scope that the request names,
+    /// reconnects the controller, or leaves the form or the formset. A failed
+    /// commit, discard or reconnect keeps the current page and shows the
+    /// reason. [`ActionRequest::Reset`] keeps the page and asks the front end
+    /// to reset the platform.
+    fn result<P: Provider<Handle = H>>(
+        &mut self,
+        result: Result<ActionRequest, Error>,
+        handle: H,
+        guid: Guid,
+        form: FormId,
+        question: QuestionId,
+        provider: &mut P,
+    ) -> Event {
+        let request = match result {
+            Ok(request) => request,
+            Err(error) => return self.failure(error),
+        };
+        if let Err(error) = self.commit(request, handle, guid, form, question, provider) {
+            return self.failure(error);
+        }
+        if let Err(error) = self.revert(request, handle, guid, form, provider) {
+            return self.failure(error);
+        }
+        if let Err(error) = Self::reconnect(request, handle, provider) {
+            return self.failure(error);
+        }
+        self.message = match request {
+            ActionRequest::Reset => {
+                Some("A reset is required for the change to take effect".into())
+            }
+            _ => None,
+        };
+        if request.discards() {
+            self.editor = None;
+        }
+        if request.leaves_formset() {
+            self.pages.clear();
+        } else if request.leaves_form() {
+            if self.pages.len() > self.base {
+                self.pages.pop();
+            } else {
+                self.pages.clear();
             }
         }
+        Event::Response(request)
+    }
+
+    /// Commits the scope that the request names.
+    fn commit<P: Provider<Handle = H>>(
+        &self,
+        request: ActionRequest,
+        handle: H,
+        guid: Guid,
+        form: FormId,
+        question: QuestionId,
+        provider: &mut P,
+    ) -> Result<(), Error> {
+        let scope = match request {
+            ActionRequest::Submit => Scope::FormSet,
+            ActionRequest::FormApply | ActionRequest::FormSubmitExit => Scope::Form(form),
+            ActionRequest::QuestionApply => Scope::Question(question),
+            _ => return Ok(()),
+        };
+        let Some(index) = self.set_index(handle, guid) else {
+            return Ok(());
+        };
+        provider.apply(handle, &self.sets[index].1, scope)
+    }
+
+    /// Discards the scope that the request names.
+    fn revert<P: Provider<Handle = H>>(
+        &self,
+        request: ActionRequest,
+        handle: H,
+        guid: Guid,
+        form: FormId,
+        provider: &mut P,
+    ) -> Result<(), Error> {
+        let scope = match request {
+            ActionRequest::Exit => Scope::FormSet,
+            ActionRequest::FormDiscard | ActionRequest::FormDiscardExit => Scope::Form(form),
+            _ => return Ok(()),
+        };
+        let Some(index) = self.set_index(handle, guid) else {
+            return Ok(());
+        };
+        provider.discard(handle, &self.sets[index].1, scope)
+    }
+
+    /// Reconnects the controller when the request asks for it.
+    fn reconnect<P: Provider<Handle = H>>(
+        request: ActionRequest,
+        handle: H,
+        provider: &mut P,
+    ) -> Result<(), Error> {
+        if request == ActionRequest::Reconnect {
+            provider.reconnect(handle)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the index of the published formset with this identity.
+    fn set_index(&self, handle: H, guid: Guid) -> Option<usize> {
+        self.sets
+            .iter()
+            .position(|set| set.0 == handle && set.1.guid == guid)
     }
     fn edit<P: Provider<Handle = H>>(&mut self, input: Input, provider: &mut P) -> Event {
         if input == Input::Back {
@@ -777,12 +960,13 @@ impl<H: Copy + Eq> Session<H> {
             return Event::Changed;
         }
         let page = self.pages.last().expect("editor page exists");
-        let (handle, set) = self
+        let (handle, guid, form) = (page.handle, page.guid, page.form);
+        let (_, set) = self
             .sets
             .iter()
-            .find(|s| s.0 == page.handle && s.1.guid == page.guid)
+            .find(|s| s.0 == handle && s.1.guid == guid)
             .expect("editor formset exists");
-        let statement = &set.form(page.form).expect("editor form exists").items[*source].statement;
+        let statement = &set.form(form).expect("editor form exists").items[*source].statement;
         let value = match (&editor.kind, statement) {
             (EditorKind::Choice { selected, .. }, Statement::OneOf { choices, .. }) => {
                 choices.get(*selected).map(|c| Value::Number(c.value))
@@ -820,16 +1004,13 @@ impl<H: Copy + Eq> Session<H> {
                 reason: "The value is outside the question's bounds or step".into(),
             });
         };
-        let result = provider.write(
-            *handle,
-            set,
-            statement.question().expect("editor question exists"),
-            &value,
-        );
+        let question = statement.question().expect("editor question exists");
+        let id = question.id;
+        let result = provider.write(handle, set, question, &value);
         if result.is_ok() {
             self.editor = None;
         }
-        self.result(result)
+        self.result(result, handle, guid, form, id, provider)
     }
 }
 
@@ -930,9 +1111,18 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::{Choice, Form, FormId, Item, Question, Storage, Width};
+    use crate::{Choice, Form, FormId, Item, PopupStyle, PopupType, Question, Storage, Width};
     use alloc::collections::BTreeMap;
     use alloc::{vec, vec::Vec};
+
+    /// One lifecycle call that the session made on the provider.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Step {
+        /// A commit of the scope.
+        Apply(Scope),
+        /// A discard of the scope.
+        Discard(Scope),
+    }
 
     #[derive(Default)]
     struct Memory {
@@ -941,7 +1131,15 @@ mod tests {
         write_handles: Vec<u32>,
         actions: Vec<QuestionId>,
         action_handles: Vec<u32>,
-        responses: BTreeMap<u16, Response>,
+        responses: BTreeMap<u16, ActionRequest>,
+        /// The value from before the first change of each question.
+        originals: BTreeMap<u16, Value>,
+        /// Lifecycle calls, in call order.
+        lifecycle: Vec<Step>,
+        /// The handles of the reconnect calls.
+        reconnects: Vec<u32>,
+        /// When set, every discard fails with this reason.
+        discard_failure: Option<&'static str>,
     }
 
     impl Memory {
@@ -950,9 +1148,30 @@ mod tests {
             self
         }
 
-        fn respond(&mut self, id: u16, response: Response) -> &mut Self {
+        fn respond(&mut self, id: u16, response: ActionRequest) -> &mut Self {
             self.responses.insert(id, response);
             self
+        }
+
+        /// Returns the question identifiers that a scope covers.
+        fn scope_ids(set: &FormSet, scope: Scope) -> Vec<u16> {
+            match scope {
+                Scope::FormSet => set
+                    .forms
+                    .iter()
+                    .flat_map(|form| form.items.iter())
+                    .filter_map(|item| item.statement.question())
+                    .map(|question| question.id.0)
+                    .collect(),
+                Scope::Form(form) => set.form(form).map_or_else(Vec::new, |form| {
+                    form.items
+                        .iter()
+                        .filter_map(|item| item.statement.question())
+                        .map(|question| question.id.0)
+                        .collect()
+                }),
+                Scope::Question(id) => vec![id.0],
+            }
         }
     }
 
@@ -982,15 +1201,19 @@ mod tests {
             _set: &FormSet,
             question: &Question,
             value: &Value,
-        ) -> Result<Response, Error> {
+        ) -> Result<ActionRequest, Error> {
             self.writes.push((question.id, value.clone()));
             self.write_handles.push(handle);
+            // Keep the value from before the first change, as a browser does.
+            if let Some(old) = self.values.get(&question.id.0).cloned() {
+                self.originals.entry(question.id.0).or_insert(old);
+            }
             self.values.insert(question.id.0, value.clone());
             Ok(self
                 .responses
                 .get(&question.id.0)
                 .cloned()
-                .unwrap_or(Response::None))
+                .unwrap_or(ActionRequest::None))
         }
 
         fn action(
@@ -998,14 +1221,53 @@ mod tests {
             handle: Self::Handle,
             _set: &FormSet,
             question: &Question,
-        ) -> Result<Response, Error> {
+        ) -> Result<ActionRequest, Error> {
             self.actions.push(question.id);
             self.action_handles.push(handle);
             Ok(self
                 .responses
                 .get(&question.id.0)
                 .cloned()
-                .unwrap_or(Response::None))
+                .unwrap_or(ActionRequest::None))
+        }
+
+        fn apply(
+            &mut self,
+            _handle: Self::Handle,
+            set: &FormSet,
+            scope: Scope,
+        ) -> Result<(), Error> {
+            self.lifecycle.push(Step::Apply(scope));
+            for id in Self::scope_ids(set, scope) {
+                self.originals.remove(&id);
+            }
+            Ok(())
+        }
+
+        fn discard(
+            &mut self,
+            _handle: Self::Handle,
+            set: &FormSet,
+            scope: Scope,
+        ) -> Result<(), Error> {
+            self.lifecycle.push(Step::Discard(scope));
+            if let Some(reason) = self.discard_failure {
+                return Err(Error {
+                    code: 1,
+                    reason: reason.into(),
+                });
+            }
+            for id in Self::scope_ids(set, scope) {
+                if let Some(old) = self.originals.remove(&id) {
+                    self.values.insert(id, old);
+                }
+            }
+            Ok(())
+        }
+
+        fn reconnect(&mut self, handle: Self::Handle) -> Result<(), Error> {
+            self.reconnects.push(handle);
+            Ok(())
         }
     }
 
@@ -1201,15 +1463,16 @@ mod tests {
     #[test]
     fn enter_on_action_runs_provider_once() {
         let mut memory = Memory::default();
-        memory.respond(5, Response::Message("done".into()));
+        memory.respond(5, ActionRequest::FormApply);
         let mut session = entered(&mut memory);
         assert_eq!(session.view(&mut memory).selected, Some(2));
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::Message("done".into()))
+            Event::Response(ActionRequest::FormApply)
         );
         assert_eq!(memory.actions, [QuestionId(5)]);
-        assert_eq!(session.view(&mut memory).message.as_deref(), Some("done"));
+        assert_eq!(memory.lifecycle, [Step::Apply(Scope::Form(FormId(1)))]);
+        assert_eq!(session.view(&mut memory).title, "Main");
     }
 
     #[test]
@@ -1217,15 +1480,19 @@ mod tests {
         let mut memory = Memory::default();
         memory
             .put(1, Value::Bool(false))
-            .respond(1, Response::Refresh);
+            .respond(1, ActionRequest::QuestionApply);
         let mut session = entered(&mut memory);
         session.input(Input::Down, &mut memory);
         assert_eq!(session.view(&mut memory).selected, Some(3));
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::Refresh)
+            Event::Response(ActionRequest::QuestionApply)
         );
         assert_eq!(memory.writes, [(QuestionId(1), Value::Bool(true))]);
+        assert_eq!(
+            memory.lifecycle,
+            [Step::Apply(Scope::Question(QuestionId(1)))]
+        );
         assert_eq!(session.view(&mut memory).rows[3].value, "On");
     }
 
@@ -1273,7 +1540,7 @@ mod tests {
         session.input(Input::Char('5'), &mut memory);
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::None)
+            Event::Response(ActionRequest::None)
         );
         assert_eq!(memory.writes, [(QuestionId(3), Value::Number(15))]);
         assert!(session.view(&mut memory).editor.is_none());
@@ -1303,7 +1570,7 @@ mod tests {
         assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::None)
+            Event::Response(ActionRequest::None)
         );
         assert_eq!(memory.writes, [(QuestionId(2), Value::Number(20))]);
         assert_eq!(session.view(&mut memory).rows[4].value, "High");
@@ -1421,26 +1688,208 @@ mod tests {
     #[test]
     fn reset_and_exit_responses_apply() {
         let mut memory = Memory::default();
-        memory.respond(1, Response::Reset);
+        memory.respond(1, ActionRequest::Reset);
         let mut session = entered(&mut memory);
         session.input(Input::Down, &mut memory);
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::Reset)
+            Event::Response(ActionRequest::Reset)
         );
         let message = session.view(&mut memory).message.unwrap_or_default();
         assert!(message.contains("reset"), "message was {message:?}");
+        assert_eq!(session.view(&mut memory).title, "Main");
 
         let mut memory = Memory::default();
-        memory.respond(5, Response::Exit);
+        memory.respond(5, ActionRequest::Exit);
         let mut session = entered(&mut memory);
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::Exit)
+            Event::Response(ActionRequest::Exit)
         );
+        assert_eq!(memory.lifecycle, [Step::Discard(Scope::FormSet)]);
         let view = session.view(&mut memory);
         assert_eq!(view.title, "Formsets");
         assert_eq!(view.rows.len(), 1);
+    }
+
+    /// A formset with a link to a second form, for the form-level requests.
+    fn linked() -> FormSet {
+        formset(
+            0x30,
+            "Linked",
+            vec![
+                form(
+                    1,
+                    "First",
+                    vec![
+                        item(Statement::Goto {
+                            prompt: "More".into(),
+                            help: String::new(),
+                            form: FormId(2),
+                            question: None,
+                        }),
+                        item(Statement::Action {
+                            question: question(5, "First run"),
+                        }),
+                    ],
+                ),
+                form(
+                    2,
+                    "Second",
+                    vec![
+                        item(Statement::Checkbox {
+                            question: question(1, "Shared switch"),
+                            default: false,
+                        }),
+                        item(Statement::Action {
+                            question: question(6, "Second run"),
+                        }),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    /// Opens the second form of `linked()`.
+    fn entered_second(memory: &mut Memory) -> Session<u32> {
+        let mut session = Session::new(vec![(7, linked())]).with_back_row(false);
+        assert_eq!(session.input(Input::Enter, memory), Event::Changed);
+        assert_eq!(session.input(Input::Enter, memory), Event::Changed);
+        assert_eq!(session.view(memory).title, "Second");
+        session
+    }
+
+    #[test]
+    fn form_apply_commits_and_keeps_the_form() {
+        let mut memory = Memory::default();
+        memory
+            .put(1, Value::Bool(false))
+            .respond(1, ActionRequest::None);
+        let mut session = entered_second(&mut memory);
+
+        // The person changes a value on the second form.
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::None)
+        );
+        assert_eq!(memory.values.get(&1), Some(&Value::Bool(true)));
+
+        // FormApply commits the change and keeps the form open.
+        memory.respond(6, ActionRequest::FormApply);
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::FormApply)
+        );
+        assert_eq!(memory.lifecycle, [Step::Apply(Scope::Form(FormId(2)))]);
+        assert_eq!(session.view(&mut memory).title, "Second");
+        assert_eq!(session.view(&mut memory).rows[0].value, "On");
+    }
+
+    #[test]
+    fn form_discard_restores_the_values_of_the_form() {
+        let mut memory = Memory::default();
+        memory
+            .put(1, Value::Bool(false))
+            .respond(1, ActionRequest::None);
+        let mut session = entered_second(&mut memory);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::None)
+        );
+        assert_eq!(memory.values.get(&1), Some(&Value::Bool(true)));
+
+        memory.respond(6, ActionRequest::FormDiscard);
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::FormDiscard)
+        );
+        assert_eq!(memory.lifecycle, [Step::Discard(Scope::Form(FormId(2)))]);
+        assert_eq!(memory.values.get(&1), Some(&Value::Bool(false)));
+        assert_eq!(session.view(&mut memory).title, "Second");
+        assert_eq!(session.view(&mut memory).rows[0].value, "Off");
+    }
+
+    #[test]
+    fn form_exit_requests_leave_the_form_after_the_scope_call() {
+        for (request, step) in [
+            (
+                ActionRequest::FormSubmitExit,
+                Step::Apply(Scope::Form(FormId(2))),
+            ),
+            (
+                ActionRequest::FormDiscardExit,
+                Step::Discard(Scope::Form(FormId(2))),
+            ),
+        ] {
+            let mut memory = Memory::default();
+            memory
+                .put(1, Value::Bool(false))
+                .respond(1, ActionRequest::None);
+            let mut session = entered_second(&mut memory);
+            session.input(Input::Enter, &mut memory);
+            memory.respond(6, request);
+            session.input(Input::Down, &mut memory);
+            assert_eq!(
+                session.input(Input::Enter, &mut memory),
+                Event::Response(request)
+            );
+            assert_eq!(memory.lifecycle, [step]);
+            assert_eq!(session.view(&mut memory).title, "First");
+            let restored = request == ActionRequest::FormDiscardExit;
+            assert_eq!(
+                memory.values.get(&1),
+                Some(&Value::Bool(!restored)),
+                "request {request:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn submit_commits_the_formset_and_leaves_it() {
+        let mut memory = Memory::default();
+        memory.respond(5, ActionRequest::Submit);
+        let mut session = entered(&mut memory);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::Submit)
+        );
+        assert_eq!(memory.lifecycle, [Step::Apply(Scope::FormSet)]);
+        assert_eq!(session.view(&mut memory).title, "Formsets");
+    }
+
+    #[test]
+    fn reconnect_reaches_the_provider_and_keeps_the_page() {
+        let mut memory = Memory::default();
+        memory.respond(5, ActionRequest::Reconnect);
+        let mut session = entered(&mut memory);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::Reconnect)
+        );
+        assert_eq!(memory.reconnects, [7]);
+        assert_eq!(session.view(&mut memory).title, "Main");
+        assert!(session.view(&mut memory).message.is_none());
+    }
+
+    #[test]
+    fn failed_discard_keeps_the_form_and_shows_the_reason() {
+        let mut memory = Memory {
+            discard_failure: Some("the driver refused the discard"),
+            ..Memory::default()
+        };
+        memory.respond(5, ActionRequest::FormDiscard);
+        let mut session = entered(&mut memory);
+        match session.input(Input::Enter, &mut memory) {
+            Event::Failed(error) => assert!(error.reason.contains("refused"), "{}", error.reason),
+            event => panic!("unexpected event {event:?}"),
+        }
+        assert_eq!(session.view(&mut memory).title, "Main");
+        assert_eq!(
+            session.view(&mut memory).message.as_deref(),
+            Some("the driver refused the discard")
+        );
     }
 
     #[test]
@@ -1827,14 +2276,14 @@ mod tests {
         assert_eq!(session.view(&mut memory).selected, Some(1));
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::None)
+            Event::Response(ActionRequest::None)
         );
         assert_eq!(memory.actions, [QuestionId(6)]);
         assert_eq!(memory.action_handles, [2]);
         assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
         assert_eq!(
             session.input(Input::Enter, &mut memory),
-            Event::Response(Response::None)
+            Event::Response(ActionRequest::None)
         );
         assert_eq!(memory.writes, [(QuestionId(1), Value::Number(1))]);
         assert_eq!(memory.write_handles, [2]);
@@ -1851,9 +2300,102 @@ mod tests {
         assert_eq!(pinned.input(Input::Down, &mut memory), Event::Changed);
         assert_eq!(
             pinned.input(Input::Enter, &mut memory),
-            Event::Response(Response::None)
+            Event::Response(ActionRequest::None)
         );
         assert_eq!(memory.writes, [(QuestionId(1), Value::Number(1))]);
         assert_eq!(memory.write_handles, [1]);
+    }
+
+    #[test]
+    fn popup_takes_every_input_and_keeps_the_page() {
+        let mut memory = Memory::default();
+        let mut session = entered(&mut memory);
+        let before = session.view(&mut memory);
+        session.open_popup(Popup::new(
+            PopupStyle::Warning,
+            PopupType::YesNo,
+            "Erase the log?",
+        ));
+        assert_eq!(
+            session.view(&mut memory).popup.map(|popup| popup.message),
+            Some(String::from("Erase the log?"))
+        );
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
+        assert_eq!(session.input(Input::Char('q'), &mut memory), Event::None);
+        assert_eq!(session.view(&mut memory).selected, before.selected);
+        assert_eq!(memory.writes, []);
+        assert_eq!(memory.actions, []);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Popup(PopupSelection::No)
+        );
+        let after = session.view(&mut memory);
+        assert!(after.popup.is_none());
+        assert_eq!(after.selected, before.selected);
+        assert_eq!(after.title, before.title);
+    }
+
+    #[test]
+    fn popup_cancels_only_a_type_that_offers_cancel() {
+        let mut memory = Memory::default();
+        let mut session = entered(&mut memory);
+        session.open_popup(Popup::new(PopupStyle::Info, PopupType::Ok, "Stored."));
+        assert_eq!(session.input(Input::Back, &mut memory), Event::None);
+        assert!(session.view(&mut memory).popup.is_some());
+        assert_eq!(
+            session.input(Input::Char('o'), &mut memory),
+            Event::Popup(PopupSelection::Ok)
+        );
+
+        session.open_popup(Popup::new(
+            PopupStyle::Error,
+            PopupType::YesNoCancel,
+            "Keep the change?",
+        ));
+        assert_eq!(
+            session.input(Input::Back, &mut memory),
+            Event::Popup(PopupSelection::Cancel)
+        );
+    }
+
+    #[test]
+    fn a_second_popup_replaces_the_first() {
+        let mut memory = Memory::default();
+        let mut session = entered(&mut memory);
+        session.open_popup(Popup::new(PopupStyle::Info, PopupType::Ok, "First"));
+        session.open_popup(Popup::new(
+            PopupStyle::Error,
+            PopupType::Ok,
+            "Second failure",
+        ));
+        let popup = session.view(&mut memory).popup.expect("a popup is open");
+        assert_eq!(popup.message, "Second failure");
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Popup(PopupSelection::Ok)
+        );
+    }
+
+    #[test]
+    fn popup_leaves_an_open_editor_unchanged() {
+        let mut memory = Memory::default();
+        let mut session = entered(&mut memory);
+        session.input(Input::Down, &mut memory);
+        session.input(Input::Down, &mut memory);
+        assert_eq!(session.input(Input::Enter, &mut memory), Event::Changed);
+        let editor = session.view(&mut memory).editor;
+        assert!(editor.is_some(), "the choice editor is open");
+        session.open_popup(Popup::new(PopupStyle::Info, PopupType::Ok, "Note"));
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Popup(PopupSelection::Ok)
+        );
+        assert_eq!(session.view(&mut memory).editor, editor);
+        assert_eq!(memory.writes, []);
+        assert_eq!(
+            session.input(Input::Enter, &mut memory),
+            Event::Response(ActionRequest::None)
+        );
+        assert_eq!(memory.writes, [(QuestionId(2), Value::Number(10))]);
     }
 }

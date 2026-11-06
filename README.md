@@ -17,11 +17,11 @@ front end. The `hii-*` crates are optional HII adapters.
 | --- | --- | --- | --- |
 | `forms` | model | Formsets, forms, statements, questions, values, the `Provider` trait | `no_std` + `alloc`, any target |
 | `forms::Session` | session | Navigation state: `Input` in, `Event` and `View` out | `no_std` + `alloc`, any target |
-| `forms::widgets` | view | `FormsWidget` and `Theme`: draw a `View` as a setup page | `no_std` + `alloc`, any target |
+| `forms::widgets` | view | `FormsWidget`, `PopupWidget` and `Theme`: draw a `View` and a `Popup` as a setup page | `no_std` + `alloc`, any target |
 | `forms-uefi` | front end | UEFI display and input: graphics output with a text console fallback, `KeyMap`, `Shell` | UEFI targets, host build for the key map tests |
 | `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
 | `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
-| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, and publication of a `forms::Provider` as a formset | UEFI targets, host build for the producer tests |
+| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup` | UEFI targets, host build for the producer and popup tests |
 
 The crate is one unit because the parts are useless apart: a session without a
 model has nothing to navigate, and a widget without a view has nothing to draw.
@@ -52,6 +52,50 @@ Navigation and refresh preserve both the provider handle and the formset GUID.
 Different providers can publish the same GUID without sharing question state.
 `enter(guid)` selects the first matching provider and retains that identity.
 
+## Popups
+
+`forms::Popup` is the modal decision that UEFI firmware publishes as
+`EFI_HII_POPUP_PROTOCOL.CreatePopup`. It carries a style (`Info`, `Warning`,
+`Error`), a type that fixes the legal answers (`Ok`, `OkCancel`, `YesNo`,
+`YesNoCancel`) and the message. `Popup::new` selects the first answer.
+
+`Session::open_popup` shows one over the running page, so a front end raises a
+confirmation without a second session. `View::popup` carries it, and
+`forms::widgets::FormsWidget` draws it as a centered modal that covers the page
+rows. While a popup is open, `Input` reaches the popup first and nothing else
+changes. Left and Right (and Up and Down for a three-key front end) move the
+highlight and wrap; Enter accepts the highlight; the letters `Y`, `N`, `O` and
+`C` accept that answer when the type offers it; Back cancels only a popup whose
+type offers Cancel. A selection closes the popup and returns
+`Event::Popup(selection)`. A popup never reports an answer that its type does
+not offer, so a warning cannot be dismissed into consent.
+
+## Action requests
+
+A provider answers a change or an action with an `ActionRequest`. The value is
+the number that a UEFI driver writes to `ActionRequest` in
+`EFI_HII_CONFIG_ACCESS_PROTOCOL.Callback`: 0 to 9, from `None` to
+`QuestionApply`. The session is the browser, so it acts on the request before
+it returns `Event::Response`:
+
+| Request | Effect |
+| --- | --- |
+| `None` | Nothing |
+| `Reset` | The page stays, the message asks for a reset, and the front end resets. |
+| `Submit` | `apply(FormSet)`, then the formset list |
+| `Exit` | `discard(FormSet)`, then the formset list |
+| `FormSubmitExit` | `apply(Form(..))`, then the previous page |
+| `FormDiscardExit` | `discard(Form(..))`, then the previous page |
+| `FormApply` | `apply(Form(..))`, the page stays |
+| `FormDiscard` | `discard(Form(..))`, the page stays |
+| `Reconnect` | `reconnect(handle)` |
+| `QuestionApply` | `apply(Question(..))` |
+
+A provider writes every change at once. A provider that wants a discard to
+change something therefore keeps the value from before the first change of a
+scope, and writes it back in `discard`. A failed call keeps the page and shows
+the reason.
+
 ## The page
 
 `FormsWidget` keeps the usual setup-browser columns at any width. The prompt is
@@ -71,7 +115,8 @@ to the right edge. Set `Theme::heading_rule` to `false` to omit the rule.
 ## Use on Linux
 
 A Linux program builds `forms::FormSet` values from its own settings, implements
-`forms::Provider` over its own storage (`formsets`, `read`, `write`, `action`),
+`forms::Provider` over its own storage (`formsets`, `read`, `write`, `action`)
+and over the lifecycle calls (`apply`, `discard`, `reconnect`),
 feeds key strokes to a `forms::Session` and draws each `forms::View` with
 `forms::widgets::FormsWidget` on a ratatui terminal backend.
 
@@ -152,14 +197,62 @@ Limits:
 
 - The producer supports checkboxes, numbers, one-of choices and bounded text.
   Text takes `maximum * 2` bytes and stores UTF-16.
-- Action questions keep no storage. `Callback` returns `EFI_UNSUPPORTED`, so
-  the HII browser does not run them. A front end that needs actions uses the
-  native provider.
+- Action questions keep no storage. `Callback` runs them through
+  `Provider::action` and reports the returned request to the browser. A
+  browser request to submit the formset becomes `Provider::apply`.
 - Values that the provider refuses do not change the stored data, and the
   browser shows the returned status.
 - The adapter uses firmware pool memory for the protocol context. A failed
   removal keeps that memory and the provider alive, because firmware would
   otherwise hold a stale pointer. Call `remove` before driver unload.
+
+## Show a popup
+
+A driver callback asks the setup browser for one decision through
+`EFI_HII_POPUP_PROTOCOL.CreatePopup`. `hii_uefi::popup::Registration::install`
+publishes that protocol, so a driver callback reaches the page that the front
+end shows.
+
+`CreatePopup` does four steps:
+
+1. It checks the popup type and the message identifier.
+2. `hii_uefi::popup::HiiStrings` resolves the message through
+   `EFI_HII_STRING_PROTOCOL`.
+3. It builds a `forms::Popup` and calls the `Presenter` of the front end.
+4. It checks the answer against the popup type and writes the selection.
+
+```rust,no_run
+use hii_uefi::popup::{HiiStrings, Registration};
+use hii_uefi::raw::Boot;
+
+# fn serve(boot: Boot, presenter: impl hii_uefi::popup::Presenter + 'static)
+#     -> Result<(), uefi_raw::Status> {
+let strings = HiiStrings::new(boot)?;
+// SAFETY: The driver stays resident until removal succeeds.
+let mut registration = unsafe { Registration::install(boot, presenter, strings)? };
+// ... the HII browser calls CreatePopup ...
+registration.remove()?;
+# Ok(())
+# }
+```
+
+The front end implements `Presenter` over its display and input, and drives
+`forms::Popup::input` for the keys. The crate holds no display code, because
+display and input belong to the front end. `Registration` also accepts a
+`Box<dyn Presenter>`.
+
+Limits:
+
+- An unknown popup type, a null HII handle, message 0, or a message that does
+  not resolve returns `EFI_INVALID_PARAMETER`, and the popup does not show.
+- An answer outside the popup type returns `EFI_INVALID_PARAMETER`, and the
+  selection output keeps its old value.
+- A popup style that the firmware does not define shows the message as
+  information, as the EDK II display engine does.
+- A presenter or resolver call that re-enters the protocol gets
+  `EFI_ACCESS_DENIED`. The outer popup still answers.
+- The context lives in firmware pool memory. A failed removal keeps that
+  memory and the presenter alive. Call `remove` before driver unload.
 
 ## Build and check
 

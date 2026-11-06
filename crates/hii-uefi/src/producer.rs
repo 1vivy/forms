@@ -12,16 +12,20 @@
 //! to the question width. A partial `<ConfigResp>` overlays the current
 //! buffer. Only questions whose value changes go to [`Provider::write`].
 //!
-//! Action questions stay outside the buffer and keep no storage. The producer
-//! does not run actions. The Config Access callback reports
-//! `EFI_UNSUPPORTED` for them.
+//! Action questions stay outside the buffer and keep no storage. The Config
+//! Access callback runs them through [`Provider::action`] and reports the
+//! provider request to the browser. A request that a value write returns is
+//! kept and reported by the next callback.
 
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use forms::{FormSet, Provider, Question, Statement, Storage, VarStore, VarStoreId, VarStoreKind};
+use forms::{
+    ActionRequest, FormSet, Provider, Question, Statement, Storage, VarStore, VarStoreId,
+    VarStoreKind,
+};
 use hii_ifr::{EncodeError, config, value_bytes, value_from};
 use uefi_raw::Status;
 
@@ -102,7 +106,7 @@ impl PreparedFormSet {
     ///
     /// Checkbox values take one byte. Numbers take the width of their
     /// statement. Text takes `maximum * 2` bytes. Action questions keep no
-    /// storage, because the producer does not run them.
+    /// storage, because the browser runs them through the callback.
     ///
     /// # Errors
     ///
@@ -230,29 +234,32 @@ impl PreparedFormSet {
     /// The response must name this producer's store, name and path. Each
     /// block overlays the current buffer, so a block may cover part of a
     /// question. Only questions whose value changes go to the provider. The
-    /// provider request in its answer is ignored.
+    /// answer carries the request of the last changed question, so the caller
+    /// can report it to the browser.
     ///
     /// # Errors
     ///
     /// Returns [`Status::INVALID_PARAMETER`] for a malformed header, element,
     /// number, value, UTF-16 sequence, or a block outside the store. Returns
-    /// the provider status when a read or write fails. `progress` is the byte
-    /// offset of the rejected or failing block, or 0 when no block applies.
+    /// the provider status when a read or write fails, and the request of the
+    /// last changed question otherwise. `progress` is the byte offset of the
+    /// rejected or failing block, or 0 when no block applies.
     pub fn route<P: Provider>(
         &self,
         provider: &mut P,
         handle: P::Handle,
         configuration: &str,
         path: &[u8],
-    ) -> Result<(), ConfigError> {
+    ) -> Result<ActionRequest, ConfigError> {
         let (body, base) = self.body(configuration, path)?;
         let elements = elements(body, base)?;
         let blocks = parse_response(&elements, self.size)?;
         if blocks.is_empty() {
-            return Ok(());
+            return Ok(ActionRequest::None);
         }
         let current = self.read_buffer(provider, handle)?;
         let mut buffer = current.clone();
+        let mut request = ActionRequest::None;
         for block in &blocks {
             let start = usize::from(block.offset);
             let end = start + usize::from(block.width);
@@ -275,11 +282,11 @@ impl PreparedFormSet {
             if encoded.as_slice() == &current[start..end] {
                 continue;
             }
-            provider
+            request = provider
                 .write(handle, &self.set, question, &value)
                 .map_err(|error| ConfigError::from_provider(&error, progress))?;
         }
-        Ok(())
+        Ok(request)
     }
 
     /// Returns every question range in publication order.
@@ -603,7 +610,9 @@ mod tests {
     use alloc::format;
     use alloc::string::ToString;
 
-    use forms::{Error, Form, FormId, Item, QuestionFlags, QuestionId, Response, Value, Width};
+    use forms::{
+        ActionRequest, Error, Form, FormId, Item, QuestionFlags, QuestionId, Value, Width,
+    };
 
     use super::*;
 
@@ -753,7 +762,7 @@ mod tests {
             _set: &FormSet,
             question: &Question,
             value: &Value,
-        ) -> Result<Response, Error> {
+        ) -> Result<ActionRequest, Error> {
             if let Some(status) = self.write_failure {
                 return Err(Error {
                     code: status.0 as u64,
@@ -761,7 +770,7 @@ mod tests {
                 });
             }
             self.writes.push((question.id, value.clone()));
-            Ok(Response::None)
+            Ok(ActionRequest::None)
         }
 
         fn action(
@@ -769,8 +778,8 @@ mod tests {
             _handle: Self::Handle,
             _set: &FormSet,
             _question: &Question,
-        ) -> Result<Response, Error> {
-            Ok(Response::None)
+        ) -> Result<ActionRequest, Error> {
+            Ok(ActionRequest::None)
         }
     }
 

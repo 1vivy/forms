@@ -43,8 +43,8 @@ mod smoke {
     use core::sync::atomic::{AtomicPtr, Ordering};
 
     use forms::{
-        Error, Form, FormId, FormSet, Provider as FormsProvider, Question, QuestionFlags,
-        QuestionId, Response, Statement, Storage, Value, Width,
+        ActionRequest, Error, Form, FormId, FormSet, Provider as FormsProvider, Question,
+        QuestionFlags, QuestionId, Statement, Storage, Value, Width,
     };
     use hii_uefi::hii::HiiProvider;
     use hii_uefi::publish::Registration;
@@ -217,11 +217,11 @@ mod smoke {
             _set: &FormSet,
             question: &Question,
             value: &Value,
-        ) -> Result<Response, Error> {
+        ) -> Result<ActionRequest, Error> {
             let mut settings = self.0.borrow_mut();
             settings.values.insert(question.id.0, value.clone());
             settings.writes.push((question.id.0, value.clone()));
-            Ok(Response::None)
+            Ok(ActionRequest::None)
         }
 
         fn action(
@@ -229,7 +229,7 @@ mod smoke {
             _handle: Self::Handle,
             _set: &FormSet,
             _question: &Question,
-        ) -> Result<Response, Error> {
+        ) -> Result<ActionRequest, Error> {
             Err(Error {
                 code: Status::UNSUPPORTED.0 as u64,
                 reason: "no actions".to_string(),

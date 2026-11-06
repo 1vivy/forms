@@ -11,10 +11,15 @@
 //! - [`Provider`] reads and changes question values and runs actions. A UEFI
 //!   application implements it over the HII database and Config Access; a
 //!   Linux program implements it over its own services.
+//! - [`ActionRequest`] is what a provider asks the browser to do after a change
+//!   or an action: commit or discard a scope, reconnect, or leave a page.
 //! - [`Session`] is the navigation state for one front end. It turns
 //!   [`Input`] into provider calls and produces a [`View`] that a renderer
 //!   draws. It draws nothing itself.
-//! - [`widgets`] draws that `View` as a setup page through ratatui.
+//! - [`Popup`] is the modal decision that a front end shows over the session,
+//!   with the style, type and answers of `EFI_HII_POPUP_PROTOCOL.CreatePopup`.
+//! - [`widgets`] draws that `View` and that `Popup` as a setup page through
+//!   ratatui.
 //!
 //! # Examples
 //!
@@ -39,12 +44,14 @@
 
 extern crate alloc;
 
+mod popup;
 mod session;
 
 pub mod widgets;
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 
+pub use popup::{Popup, PopupSelection, PopupStyle, PopupType};
 pub use session::{Editor, EditorKind, Event, Input, Row, RowKind, Session, View};
 
 /// A GUID in the UEFI byte order (`EFI_GUID`: little-endian first three fields).
@@ -443,20 +450,154 @@ pub enum Expr {
     Unsupported,
 }
 
-/// What a provider asks the front end to do after a change or an action
-/// (`EFI_BROWSER_ACTION_REQUEST_*`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Response {
-    /// Nothing further.
-    None,
-    /// Read the values of the current form again.
-    Refresh,
-    /// Leave the formset.
-    Exit,
-    /// A reset is needed for the change to take effect.
-    Reset,
-    /// Show this message to the person.
-    Message(String),
+/// What a provider asks the browser to do after a change or an action
+/// (`EFI_BROWSER_ACTION_REQUEST`).
+///
+/// A provider returns a request from [`Provider::write`] or
+/// [`Provider::action`]. The session is the browser: it acts on the request
+/// before it returns [`Event::Response`] to the front end. The numeric value
+/// of each variant is the value that a driver writes to the `ActionRequest`
+/// parameter of `EFI_HII_CONFIG_ACCESS_PROTOCOL.Callback`.
+///
+/// The browser honours a request from the `EFI_BROWSER_ACTION_CHANGED` call
+/// only, as the UEFI specification and the reference browser do.
+///
+/// # Examples
+///
+/// ```
+/// use forms::ActionRequest;
+///
+/// assert_eq!(ActionRequest::None.raw(), 0);
+/// assert_eq!(ActionRequest::QuestionApply.raw(), 9);
+/// assert_eq!(
+///     ActionRequest::from_raw(9),
+///     Some(ActionRequest::QuestionApply)
+/// );
+/// assert_eq!(ActionRequest::from_raw(10), None);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u64)]
+pub enum ActionRequest {
+    /// The browser does nothing further.
+    #[default]
+    None = 0,
+    /// The browser leaves the formset and asks the platform for a reset.
+    Reset = 1,
+    /// The browser commits every changed value and leaves the formset.
+    Submit = 2,
+    /// The browser discards every changed value and leaves the formset.
+    Exit = 3,
+    /// The browser commits the changed values of the current form and leaves
+    /// that form.
+    FormSubmitExit = 4,
+    /// The browser discards the changed values of the current form and leaves
+    /// that form.
+    FormDiscardExit = 5,
+    /// The browser commits the changed values of the current form and stays.
+    FormApply = 6,
+    /// The browser discards the changed values of the current form and stays.
+    FormDiscard = 7,
+    /// The browser reconnects the controller of the driver.
+    Reconnect = 8,
+    /// The browser commits the changed value of the current question and stays.
+    QuestionApply = 9,
+}
+
+impl ActionRequest {
+    /// Every request value, in specification order.
+    pub const ALL: [Self; 10] = [
+        Self::None,
+        Self::Reset,
+        Self::Submit,
+        Self::Exit,
+        Self::FormSubmitExit,
+        Self::FormDiscardExit,
+        Self::FormApply,
+        Self::FormDiscard,
+        Self::Reconnect,
+        Self::QuestionApply,
+    ];
+
+    /// Returns the request for a firmware value.
+    ///
+    /// Returns `None` when the value is not one of the ten specification
+    /// values, for example when a driver writes an undefined number.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::ActionRequest;
+    ///
+    /// assert_eq!(ActionRequest::from_raw(0), Some(ActionRequest::None));
+    /// assert_eq!(ActionRequest::from_raw(10), None);
+    /// ```
+    pub const fn from_raw(value: u64) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::Reset),
+            2 => Some(Self::Submit),
+            3 => Some(Self::Exit),
+            4 => Some(Self::FormSubmitExit),
+            5 => Some(Self::FormDiscardExit),
+            6 => Some(Self::FormApply),
+            7 => Some(Self::FormDiscard),
+            8 => Some(Self::Reconnect),
+            9 => Some(Self::QuestionApply),
+            _ => None,
+        }
+    }
+
+    /// Returns the firmware value of the request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::ActionRequest;
+    ///
+    /// assert_eq!(ActionRequest::Reconnect.raw(), 8);
+    /// ```
+    pub const fn raw(self) -> u64 {
+        self as u64
+    }
+
+    /// Returns whether the request leaves the formset.
+    const fn leaves_formset(self) -> bool {
+        matches!(self, Self::Submit | Self::Exit)
+    }
+
+    /// Returns whether the request leaves the current form.
+    const fn leaves_form(self) -> bool {
+        matches!(self, Self::FormSubmitExit | Self::FormDiscardExit)
+    }
+
+    /// Returns whether the request discards changes.
+    const fn discards(self) -> bool {
+        matches!(self, Self::Exit | Self::FormDiscardExit | Self::FormDiscard)
+    }
+}
+
+/// The part of a formset that a lifecycle call covers.
+///
+/// A browser names a scope when it commits or discards changes, so a provider
+/// knows how much of its staged state to keep. The provider receives the same
+/// scope in [`Provider::apply`] and [`Provider::discard`].
+///
+/// # Examples
+///
+/// ```
+/// use forms::{FormId, QuestionId, Scope};
+///
+/// assert_eq!(Scope::Form(FormId(2)), Scope::Form(FormId(2)));
+/// assert_ne!(Scope::FormSet, Scope::Question(QuestionId(1)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scope {
+    /// Every question of the published formset.
+    FormSet,
+    /// Every question of one form.
+    Form(FormId),
+    /// One question.
+    Question(QuestionId),
 }
 
 /// A provider failure: the firmware or service status and a short reason.
@@ -509,7 +650,7 @@ pub trait Provider {
         set: &FormSet,
         question: &Question,
         value: &Value,
-    ) -> Result<Response, Error>;
+    ) -> Result<ActionRequest, Error>;
 
     /// Runs the action of an action question and returns the provider's request.
     ///
@@ -521,5 +662,114 @@ pub trait Provider {
         handle: Self::Handle,
         set: &FormSet,
         question: &Question,
-    ) -> Result<Response, Error>;
+    ) -> Result<ActionRequest, Error>;
+
+    /// Commits the changes of one scope.
+    ///
+    /// The browser calls this method for [`ActionRequest::Submit`],
+    /// [`ActionRequest::FormSubmitExit`], [`ActionRequest::FormApply`] and
+    /// [`ActionRequest::QuestionApply`], before it leaves a form or stays on
+    /// it.
+    ///
+    /// A provider that stores every change in [`Provider::write`] has already
+    /// committed the value, so the default implementation does nothing. A
+    /// provider that keeps the value from before the first change of a scope
+    /// forgets that value here, so a later discard cannot undo the change.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider failure when the commit fails. The browser then
+    /// shows the reason and does not leave the form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{ActionRequest, FormSet, Provider, Scope};
+    ///
+    /// struct Fixed;
+    ///
+    /// impl Provider for Fixed {
+    ///     type Handle = u8;
+    ///     # fn formsets(&mut self) -> Result<Vec<(u8, FormSet)>, forms::Error> {
+    ///     #     Ok(Vec::new())
+    ///     # }
+    ///     # fn read(
+    ///     #     &mut self,
+    ///     #     _handle: u8,
+    ///     #     _set: &FormSet,
+    ///     #     _question: &forms::Question,
+    ///     # ) -> Result<forms::Value, forms::Error> {
+    ///     #     Ok(forms::Value::Number(0))
+    ///     # }
+    ///     # fn write(
+    ///     #     &mut self,
+    ///     #     _handle: u8,
+    ///     #     _set: &FormSet,
+    ///     #     _question: &forms::Question,
+    ///     #     _value: &forms::Value,
+    ///     # ) -> Result<ActionRequest, forms::Error> {
+    ///     #     Ok(ActionRequest::None)
+    ///     # }
+    ///     # fn action(
+    ///     #     &mut self,
+    ///     #     _handle: u8,
+    ///     #     _set: &FormSet,
+    ///     #     _question: &forms::Question,
+    ///     # ) -> Result<ActionRequest, forms::Error> {
+    ///     #     Ok(ActionRequest::None)
+    ///     # }
+    /// }
+    ///
+    /// let mut provider = Fixed;
+    /// let set = FormSet {
+    ///     guid: [0x11; 16],
+    ///     title: "Platform".into(),
+    ///     help: String::new(),
+    ///     class_guids: Vec::new(),
+    ///     varstores: Vec::new(),
+    ///     forms: Vec::new(),
+    /// };
+    /// assert!(provider.apply(0, &set, Scope::FormSet).is_ok());
+    /// ```
+    fn apply(&mut self, handle: Self::Handle, set: &FormSet, scope: Scope) -> Result<(), Error> {
+        let _ = (handle, set, scope);
+        Ok(())
+    }
+
+    /// Discards the changes of one scope.
+    ///
+    /// The browser calls this method for [`ActionRequest::Exit`],
+    /// [`ActionRequest::FormDiscardExit`] and [`ActionRequest::FormDiscard`],
+    /// before it leaves a form or stays on it.
+    ///
+    /// A provider that stores every change in [`Provider::write`] cannot undo
+    /// a write through the model alone. It keeps the value from before the
+    /// first change of the scope and writes that value back here. The default
+    /// implementation has no such record and does nothing, so a provider that
+    /// returns a discard request must override this method to make the request
+    /// effective.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider failure when the restore fails. The browser then
+    /// shows the reason and does not leave the form.
+    fn discard(&mut self, handle: Self::Handle, set: &FormSet, scope: Scope) -> Result<(), Error> {
+        let _ = (handle, set, scope);
+        Ok(())
+    }
+
+    /// Reconnects the controller that owns a published formset.
+    ///
+    /// The browser calls this method for [`ActionRequest::Reconnect`]. A UEFI
+    /// provider calls `DisconnectController` and then `ConnectController`. The
+    /// default implementation does nothing, because a provider without a
+    /// controller has nothing to reconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider failure when the reconnect fails.
+    fn reconnect(&mut self, handle: Self::Handle) -> Result<(), Error> {
+        let _ = handle;
+        Ok(())
+    }
 }

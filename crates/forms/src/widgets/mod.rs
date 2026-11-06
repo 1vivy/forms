@@ -26,6 +26,7 @@
 //!     help: "Choose a formset.".into(),
 //!     editor: None,
 //!     message: None,
+//!     popup: None,
 //! };
 //! let area = Rect::new(0, 0, 40, 12);
 //! let mut buffer = Buffer::empty(area);
@@ -33,8 +34,10 @@
 //! assert_eq!(buffer[(0, 0)].symbol(), "┌");
 //! ```
 
+mod popup;
 mod theme;
 mod widget;
 
+pub use popup::PopupWidget;
 pub use theme::Theme;
 pub use widget::FormsWidget;

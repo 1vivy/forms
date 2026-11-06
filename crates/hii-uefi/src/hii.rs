@@ -25,8 +25,8 @@ use core::ptr::{self, NonNull};
 use alloc::collections::BTreeMap;
 
 use forms::{
-    Error, FormSet, Provider, Question, QuestionFlags, Response, Statement, Storage, Value,
-    VarStoreId, Width,
+    ActionRequest, Error, FormSet, Provider, Question, QuestionFlags, QuestionId, Scope, Statement,
+    Storage, Value, VarStoreId, Width,
 };
 use hii_ifr::{config, decode, value_bytes, value_from};
 use uefi_raw::protocol::device_path::DevicePathProtocol;
@@ -100,6 +100,12 @@ pub struct HiiProvider {
     drivers: BTreeMap<HiiHandleId, Driver>,
     languages: BTreeMap<HiiHandleId, Vec<u8>>,
     problems: Vec<String>,
+    /// The value from before the first change of each question, keyed by
+    /// handle and question.
+    ///
+    /// The browser writes every change at once, so this record is the only way
+    /// that [`forms::Provider::discard`] can put a value back.
+    originals: BTreeMap<(HiiHandleId, QuestionId), Value>,
 }
 
 impl HiiProvider {
@@ -127,6 +133,7 @@ impl HiiProvider {
             drivers: BTreeMap::new(),
             languages: BTreeMap::new(),
             problems: Vec::new(),
+            originals: BTreeMap::new(),
         })
     }
 
@@ -698,6 +705,132 @@ impl HiiProvider {
         }
     }
 
+    /// Writes one firmware value to the stored configuration.
+    ///
+    /// The driver may replace the value during the `CHANGING` call, so this
+    /// method converts the value that it receives.
+    fn store_value(
+        &mut self,
+        handle: HiiHandleId,
+        set: &FormSet,
+        question: &Question,
+        statement: &Statement,
+        firmware_value: IfrTypeValue,
+    ) -> Result<(), Error> {
+        let stored = self.value_of(handle, statement, firmware_value)?;
+        let bytes = value_bytes(statement, &stored).ok_or_else(|| {
+            Self::error(
+                Status::INVALID_PARAMETER,
+                "the value does not fit the question",
+            )
+        })?;
+        match &question.storage {
+            Storage::None => {}
+            Storage::Offset { varstore, offset } => {
+                let store = set.varstore(*varstore).ok_or_else(|| {
+                    Self::error(
+                        Status::NOT_FOUND,
+                        "the question names no known variable store",
+                    )
+                })?;
+                let width = shape::width_of(statement).ok_or_else(|| {
+                    Self::error(
+                        Status::INVALID_PARAMETER,
+                        "the question has no stored width",
+                    )
+                })?;
+                let header = config::header(&set.guid, &store.name, &self.driver_path(handle)?);
+                let response = config::response(
+                    &header,
+                    &[config::Block {
+                        offset: *offset,
+                        width,
+                        bytes,
+                    }],
+                );
+                self.route_config(&response)?;
+            }
+            Storage::Name { varstore, name } => {
+                let _ = set.varstore(*varstore).ok_or_else(|| {
+                    Self::error(
+                        Status::NOT_FOUND,
+                        "the question names no known variable store",
+                    )
+                })?;
+                let mut response = config::header(&set.guid, "", &self.driver_path(handle)?);
+                response.push('&');
+                response.push_str(name);
+                response.push('=');
+                response.push_str(&hex::encode(&bytes));
+                self.route_config(&response)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Keeps the value from before the first change of a question.
+    fn remember(&mut self, handle: HiiHandleId, set: &FormSet, question: &Question) {
+        if matches!(question.storage, Storage::None) {
+            return;
+        }
+        let key = (handle, question.id);
+        if self.originals.contains_key(&key) {
+            return;
+        }
+        if let Ok(value) = self.read(handle, set, question) {
+            self.originals.insert(key, value);
+        }
+    }
+
+    /// Forgets the values from before the first change of a scope.
+    fn forget(&mut self, handle: HiiHandleId, set: &FormSet, scope: Scope) {
+        for id in Self::questions_of(set, scope) {
+            self.originals.remove(&(handle, id));
+        }
+    }
+
+    /// Puts back the values from before the first change of a scope.
+    fn restore(&mut self, handle: HiiHandleId, set: &FormSet, scope: Scope) -> Result<(), Error> {
+        let mut restore = Vec::new();
+        for id in Self::questions_of(set, scope) {
+            if let Some(value) = self.originals.remove(&(handle, id)) {
+                restore.push((id, value));
+            }
+        }
+        for (id, value) in restore {
+            let Some(statement) = shape::statement_of(set, id) else {
+                continue;
+            };
+            let Some(question) = statement.question() else {
+                continue;
+            };
+            let firmware_value = self.ffi_value(handle, statement, &value)?;
+            self.store_value(handle, set, question, statement, firmware_value)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the questions that a scope covers.
+    fn questions_of(set: &FormSet, scope: Scope) -> Vec<QuestionId> {
+        match scope {
+            Scope::FormSet => set
+                .forms
+                .iter()
+                .flat_map(|form| form.items.iter())
+                .filter_map(|item| item.statement.question())
+                .map(|question| question.id)
+                .collect(),
+            Scope::Form(form) => set.form(form).map_or_else(Vec::new, |form| {
+                form.items
+                    .iter()
+                    .filter_map(|item| item.statement.question())
+                    .map(|question| question.id)
+                    .collect()
+            }),
+            Scope::Question(id) => vec![id],
+        }
+    }
+
     /// Builds a provider failure from a firmware status.
     fn status_error(status: Status, reason: &str) -> Error {
         Error {
@@ -720,6 +853,7 @@ impl Provider for HiiProvider {
         self.drivers.clear();
         self.languages.clear();
         self.problems.clear();
+        self.originals.clear();
         let mut sets = Vec::new();
         for handle in handles {
             let id = HiiHandleId::new(handle);
@@ -776,7 +910,7 @@ impl Provider for HiiProvider {
         set: &FormSet,
         question: &Question,
         value: &Value,
-    ) -> Result<Response, Error> {
+    ) -> Result<ActionRequest, Error> {
         let statement = shape::statement_of(set, question.id).ok_or_else(|| {
             Self::error(
                 Status::INVALID_PARAMETER,
@@ -797,6 +931,9 @@ impl Provider for HiiProvider {
                 "the question stores no value and has no callback",
             ));
         }
+        // Keep the value from before the first change of this question, so a
+        // discard can put it back.
+        self.remember(handle, set, question);
         let mut firmware_value = self.ffi_value(handle, statement, value)?;
         let mut request = BrowserActionRequest::NONE;
         if callback {
@@ -826,54 +963,7 @@ impl Provider for HiiProvider {
             }
         }
         // The driver may replace the value during the call.
-        let stored = self.value_of(handle, statement, firmware_value)?;
-        let bytes = value_bytes(statement, &stored).ok_or_else(|| {
-            Self::error(
-                Status::INVALID_PARAMETER,
-                "the value does not fit the question",
-            )
-        })?;
-        match &question.storage {
-            Storage::None => {}
-            Storage::Offset { varstore, offset } => {
-                let store = set.varstore(*varstore).ok_or_else(|| {
-                    Self::error(
-                        Status::NOT_FOUND,
-                        "the question names no known variable store",
-                    )
-                })?;
-                let width = shape::width_of(statement).ok_or_else(|| {
-                    Self::error(
-                        Status::INVALID_PARAMETER,
-                        "the question has no stored width",
-                    )
-                })?;
-                let header = config::header(&set.guid, &store.name, &self.driver_path(handle)?);
-                let response = config::response(
-                    &header,
-                    &[config::Block {
-                        offset: *offset,
-                        width,
-                        bytes,
-                    }],
-                );
-                self.route_config(&response)?;
-            }
-            Storage::Name { varstore, name } => {
-                let _ = set.varstore(*varstore).ok_or_else(|| {
-                    Self::error(
-                        Status::NOT_FOUND,
-                        "the question names no known variable store",
-                    )
-                })?;
-                let mut response = config::header(&set.guid, "", &self.driver_path(handle)?);
-                response.push('&');
-                response.push_str(name);
-                response.push('=');
-                response.push_str(&hex::encode(&bytes));
-                self.route_config(&response)?;
-            }
-        }
+        self.store_value(handle, set, question, statement, firmware_value)?;
         if callback {
             let protocol = access.ok_or_else(|| {
                 Self::error(
@@ -900,7 +990,7 @@ impl Provider for HiiProvider {
                 ));
             }
         }
-        Ok(respond(request))
+        respond(request)
     }
 
     fn action(
@@ -908,7 +998,7 @@ impl Provider for HiiProvider {
         handle: Self::Handle,
         _set: &FormSet,
         question: &Question,
-    ) -> Result<Response, Error> {
+    ) -> Result<ActionRequest, Error> {
         let access = self.access(handle)?;
         let mut value = IfrTypeValue { u64: 0 };
         let mut request = BrowserActionRequest::NONE;
@@ -930,7 +1020,16 @@ impl Provider for HiiProvider {
                 "the driver cannot run the action",
             ));
         }
-        Ok(respond(request))
+        respond(request)
+    }
+
+    fn apply(&mut self, handle: Self::Handle, set: &FormSet, scope: Scope) -> Result<(), Error> {
+        self.forget(handle, set, scope);
+        Ok(())
+    }
+
+    fn discard(&mut self, handle: Self::Handle, set: &FormSet, scope: Scope) -> Result<(), Error> {
+        self.restore(handle, set, scope)
     }
 }
 
@@ -964,15 +1063,14 @@ fn number_value(width: Width, number: u64) -> IfrTypeValue {
     value
 }
 
-/// Maps a driver action request to a session response.
-fn respond(request: BrowserActionRequest) -> Response {
-    match request {
-        BrowserActionRequest::NONE => Response::None,
-        BrowserActionRequest::RESET => Response::Reset,
-        BrowserActionRequest::EXIT => Response::Exit,
-        BrowserActionRequest::RECONNECT => {
-            Response::Message("The change needs a controller reconnect.".into())
-        }
-        _ => Response::Refresh,
-    }
+/// Maps a driver action request to a session request.
+///
+/// The ten specification values keep their meaning. A driver that writes an
+/// undefined value breaks the protocol, so it becomes an error and the browser
+/// does not act on it.
+fn respond(request: BrowserActionRequest) -> Result<ActionRequest, Error> {
+    ActionRequest::from_raw(request.0 as u64).ok_or_else(|| Error {
+        code: raw::status_code(Status::DEVICE_ERROR),
+        reason: format!("the driver returned action request 0x{:x}", request.0),
+    })
 }

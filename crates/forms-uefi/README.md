@@ -19,6 +19,9 @@ a `Shell`, then calls `run` or `run_with`.
   The front end opens one input source, so a key stroke arrives once.
 - The display and the input are independent. A display without graphics output
   and an input without the extended protocol both work.
+- A popup that the session raises draws as a centered modal through the shared
+  widget. The phone map moves its highlight with the volume keys and accepts
+  the highlight with the power key.
 
 ## Public API
 

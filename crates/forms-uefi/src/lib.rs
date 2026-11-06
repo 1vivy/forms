@@ -321,7 +321,7 @@ where
         };
         if matches!(
             event,
-            Event::Changed | Event::Failed(_) | Event::Response(_)
+            Event::Changed | Event::Failed(_) | Event::Response(_) | Event::Popup(_)
         ) {
             dirty = true;
         }

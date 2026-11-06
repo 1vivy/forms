@@ -181,3 +181,121 @@ pub mod string_header {
     /// Smallest valid `HdrSize` for a language text of one character.
     pub const MIN_HEADER_SIZE: usize = 48;
 }
+
+/// UEFI 2.7 HII Popup protocol layouts.
+///
+/// `hii-uefi` installs the protocol through `uefi-raw`, whose
+/// `uefi_raw::protocol::hii::popup` module holds the same layout. This copy
+/// serves a consumer that has no dependency, such as a Patina driver or a host
+/// tool. The two must agree; `hii-uefi` checks that they do.
+pub mod popup {
+    use core::ffi::c_void;
+
+    /// Protocol GUID in UEFI byte order.
+    pub const GUID: [u8; 16] = [
+        0xc0, 0xed, 0x11, 0x43, 0x54, 0x60, 0xd4, 0x46, 0x9e, 0x40, 0x89, 0x3e, 0xa9, 0x52, 0xfc,
+        0xcc,
+    ];
+
+    /// Current protocol revision.
+    pub const REVISION: u64 = 1;
+
+    /// Raw `EFI_HII_POPUP_STYLE`; unknown foreign values remain representable.
+    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct PopupStyle(pub u32);
+
+    impl PopupStyle {
+        /// Information message.
+        pub const INFO: Self = Self(0);
+        /// Warning message.
+        pub const WARNING: Self = Self(1);
+        /// Error message.
+        pub const ERROR: Self = Self(2);
+    }
+
+    /// Raw `EFI_HII_POPUP_TYPE`; unknown foreign values remain representable.
+    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct PopupType(pub u32);
+
+    impl PopupType {
+        /// One OK answer.
+        pub const OK: Self = Self(0);
+        /// OK and Cancel answers.
+        pub const OK_CANCEL: Self = Self(1);
+        /// Yes and No answers.
+        pub const YES_NO: Self = Self(2);
+        /// Yes, No and Cancel answers.
+        pub const YES_NO_CANCEL: Self = Self(3);
+    }
+
+    /// Raw `EFI_HII_POPUP_SELECTION`.
+    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct PopupSelection(pub u32);
+
+    impl PopupSelection {
+        /// The person chose OK.
+        pub const OK: Self = Self(0);
+        /// The person chose Cancel.
+        pub const CANCEL: Self = Self(1);
+        /// The person chose Yes.
+        pub const YES: Self = Self(2);
+        /// The person chose No.
+        pub const NO: Self = Self(3);
+    }
+
+    /// `EFI_HII_CREATE_POPUP`.
+    ///
+    /// `hii_handle` identifies the package list that holds `message`, and
+    /// `message` is a string identifier in that list. `selection` is optional,
+    /// and `this` must refer to a live installed protocol instance.
+    ///
+    /// The status has the width of a pointer, as `EFI_STATUS` does. A caller
+    /// that links `uefi-raw` reads the same value through `uefi_raw::Status`.
+    pub type CreatePopup = unsafe extern "efiapi" fn(
+        this: *const HiiPopupProtocol,
+        style: PopupStyle,
+        kind: PopupType,
+        hii_handle: *mut c_void,
+        message: u16,
+        selection: *mut PopupSelection,
+    ) -> usize;
+
+    /// `EFI_HII_POPUP_PROTOCOL`.
+    ///
+    /// Firmware publishes it through `EFI_BOOT_SERVICES.LocateProtocol`. The
+    /// producer is usually the forms browser, and the consumer is a driver
+    /// callback that needs a decision or a message.
+    #[repr(C)]
+    pub struct HiiPopupProtocol {
+        /// Protocol revision.
+        pub revision: u64,
+        /// Displays a message and waits for an answer.
+        pub create_popup: CreatePopup,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::popup::{HiiPopupProtocol, PopupSelection, PopupStyle, PopupType};
+    use core::mem::{align_of, size_of};
+
+    /// The protocol table is one revision word and one function pointer.
+    #[test]
+    fn protocol_table_matches_the_pointer_width() {
+        let table = size_of::<HiiPopupProtocol>();
+        assert_eq!(table, size_of::<u64>() + size_of::<usize>());
+        let align = align_of::<u64>().max(align_of::<usize>());
+        assert_eq!(align_of::<HiiPopupProtocol>(), align);
+    }
+
+    /// The three C enumerations are 32-bit values.
+    #[test]
+    fn enumerations_are_thirty_two_bits() {
+        assert_eq!(size_of::<PopupStyle>(), 4);
+        assert_eq!(size_of::<PopupType>(), 4);
+        assert_eq!(size_of::<PopupSelection>(), 4);
+    }
+}

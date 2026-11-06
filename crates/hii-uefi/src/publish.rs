@@ -11,17 +11,18 @@
 //!
 //! `ExtractConfig` reads every requested question through `Provider::read`.
 //! `RouteConfig` writes changed questions through `Provider::write` and
-//! returns the provider status on refusal. `Callback` returns
-//! `EFI_UNSUPPORTED`, so action questions do not run through the HII browser.
+//! returns the provider status on refusal. `Callback` runs an action question
+//! through `Provider::action` and reports the provider request to the browser.
+//! It also commits the whole formset when the browser submits it.
 
 use alloc::{string::String, vec::Vec};
 use core::{
-    cell::{RefCell, RefMut},
+    cell::{Cell, RefCell, RefMut},
     mem::{align_of, size_of},
     ptr::{self, NonNull},
 };
 
-use forms::{FormSet, Provider};
+use forms::{FormSet, Provider, Scope, Storage};
 use uefi_raw::protocol::device_path::DevicePathProtocol;
 use uefi_raw::protocol::hii::config::{BrowserAction, HiiConfigAccessProtocol};
 use uefi_raw::protocol::hii::database::HiiDatabaseProtocol;
@@ -31,8 +32,9 @@ use uefi_raw::protocol::hii::{HiiHandle, QuestionId};
 use uefi_raw::table::boot::InterfaceType;
 use uefi_raw::{Char16, Handle, Status};
 
-use crate::producer::PreparedFormSet;
+use crate::producer::{ConfigError, PreparedFormSet};
 use crate::raw::Boot;
+use crate::shape;
 
 /// The vendor device path: type 1, sub-type 4, GUID, end node.
 const PATH_LENGTH: usize = 24;
@@ -53,6 +55,8 @@ struct Context<P: Provider> {
     prepared: PreparedFormSet,
     path: [u8; PATH_LENGTH],
     boot: Boot,
+    /// The request of the last value write, for the next `Callback` call.
+    pending: Cell<BrowserActionRequest>,
 }
 
 /// One published package list with its Config Access protocol.
@@ -121,13 +125,14 @@ impl<P: Provider + 'static> Registration<P> {
                 access: HiiConfigAccessProtocol {
                     extract_config: extract::<P>,
                     route_config: route::<P>,
-                    callback,
+                    callback: callback::<P>,
                 },
                 provider: RefCell::new(provider),
                 provider_handle,
                 prepared,
                 path,
                 boot,
+                pending: Cell::new(BrowserActionRequest::NONE),
             });
         }
 
@@ -425,7 +430,11 @@ unsafe extern "efiapi" fn route<P: Provider>(
         &text,
         &context.path,
     ) {
-        Ok(()) => {
+        Ok(request) => {
+            // The browser reads the request from the next callback call.
+            context
+                .pending
+                .set(BrowserActionRequest(request.raw() as usize));
             // SAFETY: ASCII length equals the UCS-2 index of the terminator.
             unsafe { *progress = configuration.add(text.len()) };
             Status::SUCCESS
@@ -438,13 +447,86 @@ unsafe extern "efiapi" fn route<P: Provider>(
     }
 }
 
-unsafe extern "efiapi" fn callback(
-    _this: *const HiiConfigAccessProtocol,
-    _action: BrowserAction,
-    _question_id: QuestionId,
+/// Runs an action question and reports the provider request to the browser.
+///
+/// The browser acts on the request of the `EFI_BROWSER_ACTION_CHANGED` call
+/// only, so an action question runs once, on that call. A browser request to
+/// submit the formset becomes [`Provider::apply`] on the whole formset.
+unsafe extern "efiapi" fn callback<P: Provider>(
+    this: *const HiiConfigAccessProtocol,
+    action: BrowserAction,
+    question_id: QuestionId,
     _value_type: u8,
     _value: *mut IfrTypeValue,
-    _action_request: *mut BrowserActionRequest,
+    action_request: *mut BrowserActionRequest,
 ) -> Status {
-    Status::UNSUPPORTED
+    if this.is_null() {
+        return Status::INVALID_PARAMETER;
+    }
+    // SAFETY: `access` is the first field of the stable, correctly typed context.
+    let context = unsafe { &*this.cast::<Context<P>>() };
+    let mut request = context.pending.replace(BrowserActionRequest::NONE);
+    let status = if action == BrowserAction::CHANGED {
+        answer_changed(context, question_id, &mut request)
+    } else if action == BrowserAction::SUBMITTED {
+        answer_submitted(context)
+    } else {
+        Status::SUCCESS
+    };
+    if status == Status::SUCCESS && !action_request.is_null() {
+        // SAFETY: Config Access supplies a writable request output.
+        unsafe { *action_request = request };
+    }
+    status
+}
+
+/// Runs the action question of a `CHANGED` call.
+///
+/// A value question is routed by `RouteConfig`, so it reports no request. A
+/// question that stores no value is an action question, and its request goes
+/// back to the browser.
+fn answer_changed<P: Provider>(
+    context: &Context<P>,
+    question_id: QuestionId,
+    request: &mut BrowserActionRequest,
+) -> Status {
+    let set = context.prepared.formset();
+    let Some(statement) = shape::statement_of(set, forms::QuestionId(question_id)) else {
+        return Status::NOT_FOUND;
+    };
+    let Some(question) = statement.question() else {
+        return Status::NOT_FOUND;
+    };
+    if !matches!(question.storage, Storage::None) {
+        return Status::SUCCESS;
+    }
+    let mut provider = match context.provider.try_borrow_mut() {
+        Ok(provider) => provider,
+        Err(_) => return Status::ACCESS_DENIED,
+    };
+    match provider.action(context.provider_handle, set, question) {
+        Ok(answer) => {
+            *request = BrowserActionRequest(answer.raw() as usize);
+            Status::SUCCESS
+        }
+        Err(error) => provider_status(&error),
+    }
+}
+
+/// Commits the whole formset after the browser submits it.
+fn answer_submitted<P: Provider>(context: &Context<P>) -> Status {
+    let set = context.prepared.formset();
+    let mut provider = match context.provider.try_borrow_mut() {
+        Ok(provider) => provider,
+        Err(_) => return Status::ACCESS_DENIED,
+    };
+    match provider.apply(context.provider_handle, set, Scope::FormSet) {
+        Ok(()) => Status::SUCCESS,
+        Err(error) => provider_status(&error),
+    }
+}
+
+/// Converts a provider failure to a firmware status.
+fn provider_status(error: &forms::Error) -> Status {
+    ConfigError::from_provider(error, 0).status
 }

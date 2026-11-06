@@ -12,8 +12,8 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEventKind, KeyModifiers};
 use forms::widgets::FormsWidget;
 use forms::{
-    Choice, Error, Form, FormId, FormSet, Input, Provider, Question, QuestionFlags, QuestionId,
-    Response, RowKind, Session, Statement, Storage, Value, VarStore, VarStoreId, VarStoreKind,
+    ActionRequest, Choice, Error, Form, FormId, FormSet, Input, Provider, Question, QuestionFlags,
+    QuestionId, RowKind, Session, Statement, Storage, Value, VarStore, VarStoreId, VarStoreKind,
     Width,
 };
 use ratatui::DefaultTerminal;
@@ -91,7 +91,7 @@ impl Provider for Memory {
         _set: &FormSet,
         question: &Question,
         value: &Value,
-    ) -> Result<Response, Error> {
+    ) -> Result<ActionRequest, Error> {
         if let Value::Text(text) = value
             && text.is_empty()
         {
@@ -102,9 +102,9 @@ impl Provider for Memory {
         }
         self.values.insert((handle, question.id.0), value.clone());
         Ok(if question.prompt == "Device name" {
-            Response::Message("Device name stored.".into())
+            ActionRequest::FormApply
         } else {
-            Response::None
+            ActionRequest::None
         })
     }
 
@@ -112,9 +112,9 @@ impl Provider for Memory {
         &mut self,
         _handle: u8,
         _set: &FormSet,
-        question: &Question,
-    ) -> Result<Response, Error> {
-        Ok(Response::Message(format!("{} started.", question.prompt)))
+        _question: &Question,
+    ) -> Result<ActionRequest, Error> {
+        Ok(ActionRequest::None)
     }
 }
 

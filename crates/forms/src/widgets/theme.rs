@@ -48,6 +48,12 @@ pub struct Theme {
     pub disabled: Style,
     /// The style of a row with an unsupported condition.
     pub uncertain: Style,
+    /// The title colour of an information popup.
+    pub popup_info: Color,
+    /// The title colour of a warning popup.
+    pub popup_warning: Color,
+    /// The title colour of an error popup.
+    pub popup_error: Color,
 }
 
 impl Default for Theme {
@@ -72,6 +78,9 @@ impl Default for Theme {
             uncertain: Style::new()
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::ITALIC),
+            popup_info: Color::LightCyan,
+            popup_warning: Color::LightYellow,
+            popup_error: Color::LightRed,
         }
     }
 }
