@@ -45,6 +45,27 @@ impl fmt::Display for EncodeError {
 
 impl core::error::Error for EncodeError {}
 
+/// Encodes one message as string 2, after the language name.
+pub(crate) fn encode_message(text: &str, guid: Guid) -> Result<Vec<u8>, EncodeError> {
+    if text.contains('\0') {
+        return Err(EncodeError::BadString);
+    }
+    let strings = Strings {
+        ids: BTreeMap::new(),
+        order: alloc::vec![String::from(text)],
+    };
+    let strings = strings.package()?;
+    let end = package(abi::PACKAGE_END, &[])?;
+    let size = u32::try_from(abi::PACKAGE_LIST_HEADER_SIZE + strings.len() + end.len())
+        .map_err(|_| EncodeError::TooLong)?;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&guid);
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&strings);
+    out.extend_from_slice(&end);
+    Ok(out)
+}
+
 /// Encodes a formset and its strings as a package list.
 pub(crate) fn encode(set: &FormSet, package_list: Guid) -> Result<Vec<u8>, EncodeError> {
     let mut strings = Strings::default();

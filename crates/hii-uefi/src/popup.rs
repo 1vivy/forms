@@ -29,9 +29,16 @@
 //! An unknown popup style shows the message as information, as the EDK II
 //! display engine does with a style that it does not know.
 //!
-//! `Registration` and `HiiStrings` call firmware, so they exist on UEFI
-//! targets only. The two traits and the protocol logic build on the host,
-//! where the boundary tests drive the callback directly.
+//! A warning or an error question offers `No` first, so one Enter refuses it.
+//! Every other popup offers its first answer.
+//!
+//! `ask` is the consumer. It publishes one message as a package list of its
+//! own, calls `CreatePopup` and removes the list again. Use it when the
+//! caller has no formset to publish.
+//!
+//! `Registration`, `HiiStrings` and `ask` call firmware, so they exist on
+//! UEFI targets only. The two traits and the protocol logic build on the
+//! host, where the boundary tests drive the callback directly.
 
 use alloc::string::String;
 
@@ -215,11 +222,45 @@ mod serve {
         }
     }
 
+    /// Maps the model style to the ABI style.
+    pub(super) fn abi_style(style: PopupStyle) -> HiiPopupStyle {
+        match style {
+            PopupStyle::Info => HiiPopupStyle::INFO,
+            PopupStyle::Warning => HiiPopupStyle::WARNING,
+            PopupStyle::Error => HiiPopupStyle::ERROR,
+        }
+    }
+
+    /// Maps the model type to the ABI type.
+    pub(super) fn abi_kind(kind: PopupType) -> HiiPopupType {
+        match kind {
+            PopupType::Ok => HiiPopupType::OK,
+            PopupType::OkCancel => HiiPopupType::OK_CANCEL,
+            PopupType::YesNo => HiiPopupType::YES_NO,
+            PopupType::YesNoCancel => HiiPopupType::YES_NO_CANCEL,
+        }
+    }
+
+    /// Maps the ABI answer to the model answer.
+    pub(super) fn answer_of(answer: HiiPopupSelection) -> Option<PopupSelection> {
+        if answer == HiiPopupSelection::OK {
+            Some(PopupSelection::Ok)
+        } else if answer == HiiPopupSelection::CANCEL {
+            Some(PopupSelection::Cancel)
+        } else if answer == HiiPopupSelection::YES {
+            Some(PopupSelection::Yes)
+        } else if answer == HiiPopupSelection::NO {
+            Some(PopupSelection::No)
+        } else {
+            None
+        }
+    }
+
     /// Maps the ABI style to the model style.
     ///
     /// A style that the specification does not define shows information, as
     /// the EDK II display engine does with a style that it does not know.
-    fn style_of(style: HiiPopupStyle) -> PopupStyle {
+    pub(super) fn style_of(style: HiiPopupStyle) -> PopupStyle {
         if style == HiiPopupStyle::WARNING {
             PopupStyle::Warning
         } else if style == HiiPopupStyle::ERROR {
@@ -230,7 +271,7 @@ mod serve {
     }
 
     /// Maps the ABI type to the model type.
-    fn kind_of(kind: HiiPopupType) -> Option<PopupType> {
+    pub(super) fn kind_of(kind: HiiPopupType) -> Option<PopupType> {
         if kind == HiiPopupType::OK {
             Some(PopupType::Ok)
         } else if kind == HiiPopupType::OK_CANCEL {
@@ -276,7 +317,7 @@ mod serve {
 }
 
 #[cfg(target_os = "uefi")]
-pub use firmware::{HiiStrings, Registration};
+pub use firmware::{HiiStrings, Registration, ask};
 
 /// The firmware side of the popup protocol.
 ///
@@ -304,20 +345,34 @@ mod firmware {
     use core::mem::{align_of, size_of};
     use core::ptr::{self, NonNull};
 
+    use forms::{PopupStyle, PopupType};
     use uefi_raw::protocol::device_path::DevicePathProtocol;
+    use uefi_raw::protocol::hii::database::HiiDatabaseProtocol;
     use uefi_raw::protocol::hii::font::FontInfo;
-    use uefi_raw::protocol::hii::popup::HiiPopupProtocol;
+    use uefi_raw::protocol::hii::popup::{HiiPopupProtocol, HiiPopupSelection};
     use uefi_raw::protocol::hii::string::HiiStringProtocol;
     use uefi_raw::protocol::hii::{HiiHandle, StringId};
     use uefi_raw::table::boot::InterfaceType;
-    use uefi_raw::{Handle, Status};
+    use uefi_raw::{Guid, Handle, Status};
 
-    use super::serve::Context;
+    use super::serve::{Context, abi_kind, abi_style, answer_of};
     use super::{Presenter, Strings};
     use crate::raw::Boot;
 
     /// The language that the resolver uses when a package list reports none.
     const DEFAULT_LANGUAGE: &[u8] = b"eng\0";
+
+    /// The package-list GUID of the message that `ask` publishes.
+    const MESSAGE_LIST: Guid = uefi_raw::guid!("3d1b8a7c-5e42-4a91-8c0d-6f2e5b4a9c11");
+
+    /// The string that holds the message. String 1 names the language.
+    const MESSAGE_ID: StringId = 2;
+
+    /// The length of the vendor device path that `ask` installs.
+    const PATH_LENGTH: usize = 24;
+
+    /// The length of its vendor node: four header bytes and one GUID.
+    const VENDOR_NODE_LENGTH: u8 = 20;
 
     /// One installed `EFI_HII_POPUP_PROTOCOL`.
     ///
@@ -605,6 +660,162 @@ mod firmware {
             self.text(&language, handle, message)
         }
     }
+
+    /// Asks one question through the popup producer that firmware publishes.
+    ///
+    /// The call publishes `message` as a package list of its own, calls
+    /// `CreatePopup` and removes the list again. The producer of the
+    /// firmware answers, so an inherited browser and a browser that this
+    /// image installed both work.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EFI_NOT_FOUND` when firmware publishes no popup protocol or no
+    /// HII database, `EFI_INVALID_PARAMETER` when the message does not fit its
+    /// length field or the answer is outside `kind`, and the firmware status
+    /// of a failed installation or a failed popup.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use forms::{PopupStyle, PopupType};
+    /// use hii_uefi::popup::ask;
+    /// use hii_uefi::raw::Boot;
+    ///
+    /// # fn approve(boot: Boot) -> Result<bool, uefi_raw::Status> {
+    /// // SAFETY: The standard library keeps the system table mapped.
+    /// let answer = ask(boot, PopupStyle::Warning, PopupType::YesNo, "Erase?")?;
+    /// # Ok(matches!(answer, forms::PopupSelection::Yes))
+    /// # }
+    /// ```
+    pub fn ask(
+        boot: Boot,
+        style: PopupStyle,
+        kind: PopupType,
+        message: &str,
+    ) -> Result<forms::PopupSelection, Status> {
+        let table = boot
+            .locate::<HiiPopupProtocol>(&HiiPopupProtocol::GUID)
+            .ok_or(Status::NOT_FOUND)?;
+        let package = Message::new(boot, message)?;
+        let mut selection = HiiPopupSelection(0xff);
+        // SAFETY: The protocol table is live, the message handle belongs to the
+        // package list that `package` holds installed, and the answer output is
+        // writable.
+        let status = unsafe {
+            ((*table.as_ptr()).create_popup)(
+                table.as_ptr(),
+                abi_style(style),
+                abi_kind(kind),
+                package.handle,
+                MESSAGE_ID,
+                &mut selection,
+            )
+        };
+        if status.is_error() {
+            return Err(status);
+        }
+        let answer = answer_of(selection).ok_or(Status::INVALID_PARAMETER)?;
+        if !kind.selections().contains(&answer) {
+            return Err(Status::INVALID_PARAMETER);
+        }
+        Ok(answer)
+    }
+
+    /// One message package list with the handle that publishes it.
+    ///
+    /// A dropped value removes the list from the HII database and withdraws
+    /// the handle.
+    struct Message {
+        boot: Boot,
+        database: NonNull<HiiDatabaseProtocol>,
+        driver: Handle,
+        handle: HiiHandle,
+        path: Vec<u8>,
+    }
+
+    impl Message {
+        /// Publishes `text` as string 2 of a list of its own.
+        fn new(boot: Boot, text: &str) -> Result<Self, Status> {
+            let database = boot
+                .locate::<HiiDatabaseProtocol>(&HiiDatabaseProtocol::GUID)
+                .ok_or(Status::NOT_FOUND)?;
+            let list = hii_ifr::encode_message(text, MESSAGE_LIST.to_bytes())
+                .map_err(|_| Status::INVALID_PARAMETER)?;
+            let mut path = Vec::with_capacity(PATH_LENGTH);
+            path.extend_from_slice(&[1, 4, VENDOR_NODE_LENGTH, 0]);
+            path.extend_from_slice(&MESSAGE_LIST.to_bytes());
+            path.extend_from_slice(&[0x7f, 0xff, 4, 0]);
+            let mut driver: Handle = ptr::null_mut();
+            // SAFETY: The path stays in this value until `Drop` withdraws it,
+            // and the handle output is writable.
+            let status = unsafe {
+                (boot.services().install_protocol_interface)(
+                    &mut driver,
+                    &DevicePathProtocol::GUID,
+                    InterfaceType::NATIVE_INTERFACE,
+                    path.as_ptr().cast(),
+                )
+            };
+            if status.is_error() {
+                return Err(status);
+            }
+            let mut handle: HiiHandle = ptr::null_mut();
+            // SAFETY: The encoded list is complete and firmware copies it
+            // during this call. Both output pointers are writable.
+            let status = unsafe {
+                (database.as_ref().new_package_list)(
+                    database.as_ptr(),
+                    list.as_ptr().cast(),
+                    driver,
+                    &mut handle,
+                )
+            };
+            if status.is_error() {
+                // SAFETY: The handle carries only the path that this call
+                // installed.
+                let _ = unsafe {
+                    (boot.services().uninstall_protocol_interface)(
+                        driver,
+                        &DevicePathProtocol::GUID,
+                        path.as_ptr().cast(),
+                    )
+                };
+                return Err(status);
+            }
+            Ok(Self {
+                boot,
+                database,
+                driver,
+                handle,
+                path,
+            })
+        }
+    }
+
+    impl Drop for Message {
+        fn drop(&mut self) {
+            // SAFETY: The handle is the package list that `new` added.
+            let _ = unsafe {
+                (self.database.as_ref().remove_package_list)(self.database.as_ptr(), self.handle)
+            };
+            // SAFETY: The driver handle carries only the path that `new`
+            // installed.
+            let status = unsafe {
+                (self.boot.services().uninstall_protocol_interface)(
+                    self.driver,
+                    &DevicePathProtocol::GUID,
+                    self.path.as_ptr().cast(),
+                )
+            };
+            if status.is_error() {
+                // Firmware still points at the path, so it stays allocated
+                // instead of becoming a dangling interface.
+                let path = core::mem::take(&mut self.path);
+                core::mem::forget(path);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -789,6 +1000,51 @@ mod tests {
         assert_eq!(status, Status::SUCCESS);
         assert_eq!(out, HiiPopupSelection::CANCEL);
         assert_eq!(journal.borrow().first, [PopupSelection::Ok]);
+    }
+
+    #[test]
+    fn a_warning_or_error_question_preselects_no() {
+        for style in [HiiPopupStyle::WARNING, HiiPopupStyle::ERROR] {
+            for kind in [HiiPopupType::YES_NO, HiiPopupType::YES_NO_CANCEL] {
+                let (context, journal) =
+                    context(Answer::Keys([Input::Enter].to_vec()), Some("Erase?"));
+                let mut out = HiiPopupSelection::YES;
+                let status = call(&context, style, kind, handle(), MESSAGE, &mut out);
+                assert_eq!(status, Status::SUCCESS);
+                assert_eq!(out, HiiPopupSelection::NO);
+                assert_eq!(journal.borrow().first, [PopupSelection::No]);
+            }
+        }
+    }
+
+    #[test]
+    fn the_mappings_are_reversible() {
+        for (style, answer) in [
+            (PopupStyle::Info, HiiPopupStyle::INFO),
+            (PopupStyle::Warning, HiiPopupStyle::WARNING),
+            (PopupStyle::Error, HiiPopupStyle::ERROR),
+        ] {
+            assert_eq!(serve::abi_style(style), answer);
+            assert_eq!(serve::style_of(answer), style);
+        }
+        for (kind, answer) in [
+            (PopupType::Ok, HiiPopupType::OK),
+            (PopupType::OkCancel, HiiPopupType::OK_CANCEL),
+            (PopupType::YesNo, HiiPopupType::YES_NO),
+            (PopupType::YesNoCancel, HiiPopupType::YES_NO_CANCEL),
+        ] {
+            assert_eq!(serve::abi_kind(kind), answer);
+            assert_eq!(serve::kind_of(answer), Some(kind));
+        }
+        for answer in [
+            PopupSelection::Ok,
+            PopupSelection::Cancel,
+            PopupSelection::Yes,
+            PopupSelection::No,
+        ] {
+            assert_eq!(serve::answer_of(serve::selection_of(answer)), Some(answer));
+        }
+        assert_eq!(serve::answer_of(HiiPopupSelection(0xff)), None);
     }
 
     #[test]

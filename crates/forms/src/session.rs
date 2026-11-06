@@ -278,6 +278,7 @@ impl<H: Copy + Eq> Session<H> {
     /// use forms::{Input, Popup, PopupSelection, PopupStyle, PopupType, Session};
     ///
     /// let mut session = Session::<u32>::new(Vec::new());
+    /// // A warning offers No first, so one Enter refuses the question.
     /// session.open_popup(Popup::new(PopupStyle::Warning, PopupType::YesNo, "Erase?"));
     /// struct Memory;
     /// impl forms::Provider for Memory {
@@ -314,7 +315,7 @@ impl<H: Copy + Eq> Session<H> {
     /// let mut provider = Memory;
     /// assert_eq!(
     ///     session.input(Input::Enter, &mut provider),
-    ///     forms::Event::Popup(PopupSelection::Yes)
+    ///     forms::Event::Popup(PopupSelection::No)
     /// );
     /// ```
     pub fn open_popup(&mut self, popup: Popup) {
@@ -2320,6 +2321,8 @@ mod tests {
             session.view(&mut memory).popup.map(|popup| popup.message),
             Some(String::from("Erase the log?"))
         );
+        // A warning starts on No, so two moves return to No.
+        assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
         assert_eq!(session.input(Input::Down, &mut memory), Event::Changed);
         assert_eq!(session.input(Input::Char('q'), &mut memory), Event::None);
         assert_eq!(session.view(&mut memory).selected, before.selected);

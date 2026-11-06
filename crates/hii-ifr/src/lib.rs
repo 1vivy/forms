@@ -45,6 +45,26 @@ use forms::{FormSet, Guid, Statement, Value, Width};
 pub use decode::DecodeError;
 pub use encode::EncodeError;
 
+/// Encodes one message as string 2 of an English package list.
+///
+/// String 1 names the language. The list contains no forms package.
+///
+/// # Errors
+///
+/// Returns [`EncodeError::BadString`] for NUL characters or
+/// [`EncodeError::TooLong`] when the package exceeds its length field.
+///
+/// # Examples
+///
+/// ```
+/// let bytes = hii_ifr::encode_message("Continue?", [0x42; 16]).unwrap();
+/// assert!(hii_ifr::decode(&bytes).unwrap().is_empty());
+/// assert!(hii_ifr::encode_message("bad\0text", [0; 16]).is_err());
+/// ```
+pub fn encode_message(text: &str, package_list: Guid) -> Result<Vec<u8>, EncodeError> {
+    encode::encode_message(text, package_list)
+}
+
 /// Encodes a formset as an HII package list.
 ///
 /// The package list holds the given list GUID, one forms package, one `en-US`

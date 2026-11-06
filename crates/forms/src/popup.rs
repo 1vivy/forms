@@ -77,7 +77,7 @@ impl PopupSelection {
 
 /// A modal message and its highlighted answer.
 ///
-/// The first answer is selected initially, as in the EDK II display engine.
+/// Warning and error questions initially select No. Other popups select the first answer.
 /// Left and Right wrap. Up and Down do the same for three-key front ends.
 /// Enter accepts the highlighted answer. Letter keys select a legal answer.
 /// Back cancels only a popup that offers Cancel; it never implies consent.
@@ -94,20 +94,26 @@ pub struct Popup {
 }
 
 impl Popup {
-    /// Creates a popup with its first answer selected.
+    /// Creates a popup with No selected for warning and error Yes/No questions.
     ///
     /// # Examples
     /// ```
     /// use forms::{Popup, PopupStyle, PopupType, PopupSelection};
     /// let popup = Popup::new(PopupStyle::Warning, PopupType::YesNo, "Continue?");
-    /// assert_eq!(popup.selected, PopupSelection::Yes);
+    /// assert_eq!(popup.selected, PopupSelection::No);
     /// ```
     pub fn new(style: PopupStyle, kind: PopupType, message: impl Into<String>) -> Self {
         Self {
             style,
             kind,
             message: message.into(),
-            selected: kind.selections()[0],
+            selected: match (style, kind) {
+                (
+                    PopupStyle::Warning | PopupStyle::Error,
+                    PopupType::YesNo | PopupType::YesNoCancel,
+                ) => PopupSelection::No,
+                _ => kind.selections()[0],
+            },
         }
     }
 
@@ -158,6 +164,17 @@ impl Popup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warning_and_error_questions_preselect_no() {
+        for style in [PopupStyle::Warning, PopupStyle::Error] {
+            for kind in [PopupType::YesNo, PopupType::YesNoCancel] {
+                let mut popup = Popup::new(style, kind, "Continue?");
+                assert_eq!(popup.selected, PopupSelection::No);
+                assert_eq!(popup.input(Input::Enter), Some(PopupSelection::No));
+            }
+        }
+    }
 
     #[test]
     fn every_type_navigates_and_accepts_only_legal_answers() {

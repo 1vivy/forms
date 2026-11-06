@@ -21,7 +21,7 @@ front end. The `hii-*` crates are optional HII adapters.
 | `forms-uefi` | front end | UEFI display and input: graphics output with a text console fallback, `KeyMap`, `Shell` | UEFI targets, host build for the key map tests |
 | `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
 | `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
-| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup` | UEFI targets, host build for the producer and popup tests |
+| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup`, with `popup::ask` as its consumer | UEFI targets, host build for the producer and popup tests |
 | `forms-examples` | teaching | Compiled example programs and the `Provider` behind them: a templated formset over typed settings, a popup, and action requests | host |
 
 The crate is one unit because the parts are useless apart: a session without a
@@ -58,7 +58,9 @@ Different providers can publish the same GUID without sharing question state.
 `forms::Popup` is the modal decision that UEFI firmware publishes as
 `EFI_HII_POPUP_PROTOCOL.CreatePopup`. It carries a style (`Info`, `Warning`,
 `Error`), a type that fixes the legal answers (`Ok`, `OkCancel`, `YesNo`,
-`YesNoCancel`) and the message. `Popup::new` selects the first answer.
+`YesNoCancel`) and the message. `Popup::new` selects the first answer, except
+for a warning or an error question, which selects `No` so that one Enter
+refuses the question.
 
 `Session::open_popup` shows one over the running page, so a front end raises a
 confirmation without a second session. `View::popup` carries it, and
@@ -70,6 +72,13 @@ highlight and wrap; Enter accepts the highlight; the letters `Y`, `N`, `O` and
 type offers Cancel. A selection closes the popup and returns
 `Event::Popup(selection)`. A popup never reports an answer that its type does
 not offer, so a warning cannot be dismissed into consent.
+
+A front end that has no formset to publish asks through `hii_uefi::popup::ask`.
+The call encodes the message with `hii-ifr`, publishes it as a package list of
+its own, calls `CreatePopup` and removes the list again. The producer of the
+firmware answers, so an inherited browser and a browser that the image
+installed both work. A failed call returns the firmware status, and a caller
+never reads a missing answer as consent.
 
 ## Action requests
 
