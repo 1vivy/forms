@@ -538,11 +538,13 @@ mod firmware {
         }
     }
 
-    /// Shows one message through the firmware browser.
+    /// Asks one question through the firmware browser.
     ///
     /// The call publishes a package list that holds the message, calls
-    /// `CreatePopup` of the installed browser and removes the list again, so a
-    /// caller with no form set reaches the browser of the firmware.
+    /// `CreatePopup` of the installed browser with the requested button set and
+    /// removes the list again, so a caller with no form set reaches the browser
+    /// of the firmware. Yes and OK answer [`ButtonRole::Default`], No answers
+    /// [`ButtonRole::Other`] `(0)`, and Cancel answers [`ButtonRole::Cancel`].
     ///
     /// # Errors
     ///
@@ -551,13 +553,18 @@ mod firmware {
     /// # Examples
     ///
     /// ```no_run
-    /// use hii_uefi::{popup::ask, raw::Boot};
+    /// use hii_uefi::{PopupKind, popup::ask, raw::Boot};
     /// # fn example(boot: Boot) {
-    /// let answer = ask(boot, forms::ModalStyle::Info, "The write finished.");
+    /// let answer = ask(boot, forms::ModalStyle::Warning, PopupKind::YesNo, "Allow the change?");
     /// let _ = answer;
     /// # }
     /// ```
-    pub fn ask(boot: Boot, style: ModalStyle, message: &str) -> Result<ButtonRole, Error> {
+    pub fn ask(
+        boot: Boot,
+        style: ModalStyle,
+        kind: crate::PopupKind,
+        message: &str,
+    ) -> Result<ButtonRole, Error> {
         let database = boot
             .locate::<HiiDatabaseProtocol>(&HiiDatabaseProtocol::GUID)
             .ok_or_else(|| error(Status::NOT_FOUND))?;
@@ -603,7 +610,7 @@ mod firmware {
             (protocol.as_ref().create_popup)(
                 protocol.as_ptr(),
                 abi_style(style),
-                HiiPopupType::OK,
+                abi_kind(kind),
                 package,
                 MESSAGE_ID,
                 &mut selection,
@@ -628,6 +635,16 @@ mod firmware {
                 uefi_raw::protocol::hii::popup::HiiPopupStyle::ERROR
             }
             ModalStyle::Info => uefi_raw::protocol::hii::popup::HiiPopupStyle::INFO,
+        }
+    }
+
+    /// Maps a button set to the ABI type of this call.
+    fn abi_kind(kind: crate::PopupKind) -> HiiPopupType {
+        match kind {
+            crate::PopupKind::Ok => HiiPopupType::OK,
+            crate::PopupKind::OkCancel => HiiPopupType::OK_CANCEL,
+            crate::PopupKind::YesNo => HiiPopupType::YES_NO,
+            crate::PopupKind::YesNoCancel => HiiPopupType::YES_NO_CANCEL,
         }
     }
 
