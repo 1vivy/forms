@@ -3,6 +3,16 @@
 use crate::{Decoration, Truncation};
 use ratatui_core::style::{Color, Modifier, Style};
 
+/// Where a value sits in its column.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Alignment {
+    /// The value ends at the right edge.
+    #[default]
+    Right,
+    /// The value starts at the left edge.
+    Left,
+}
+
 /// The colours, styles and layout defaults of a page.
 ///
 /// A consumer starts from [`Theme::default`] and changes single fields. The
@@ -43,10 +53,14 @@ pub struct Theme {
     pub hint: Color,
     /// The style of the selected row.
     pub selection: Style,
+    /// The style of a selected row that accepts no change.
+    pub gray_selected: Style,
     /// The style of a row that accepts no change.
     pub disabled: Style,
     /// The style of a row with an unreadable value or condition.
     pub uncertain: Style,
+    /// Where a value sits in its column.
+    pub value_alignment: Alignment,
     /// The title colour of an information modal.
     pub modal_info: Color,
     /// The title colour of a warning modal.
@@ -95,6 +109,11 @@ impl Default for Theme {
                 .bg(Color::LightBlue)
                 .add_modifier(Modifier::BOLD),
             disabled: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            gray_selected: Style::new()
+                .fg(Color::Black)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+            value_alignment: Alignment::Right,
             uncertain: Style::new()
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::ITALIC),

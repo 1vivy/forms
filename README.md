@@ -17,6 +17,7 @@ or a firmware opcode. HII is an adapter, not a foundation.
 | `forms::ext` | extension | `Handler`, `Registry`, `Decoration`, `EditState`: one dispatch path for built-in and consumer controls | `no_std` + `alloc` |
 | `forms::session` | session | `Input` in, `Event` and `View` out, editors, validation, defaults, refresh | `no_std` + `alloc` |
 | `forms::modal` | modal | `Modal`, buttons with roles, safe default, progress | `no_std` + `alloc` |
+| `forms::page` | placement | `Margins` and `placement`: where a page sits in a display, with one margin per edge | `no_std` + `alloc` |
 | `forms::widgets` | view | `FormsWidget`, `ModalWidget`, `Theme`, `Painters` | `no_std` + `alloc` |
 | `forms-uefi` | front end | UEFI display and input | UEFI targets |
 | `hii-abi` | HII layouts | Raw HII package and IFR layout constants | `no_std`, any target |
@@ -126,9 +127,16 @@ let session = forms::Session::<u8>::new(Vec::new()).with_registry(registry);
 
 Drawing of a consumer decoration goes through a `Paint` function in
 `forms::widgets::Painters`. The theme carries the colours, the column split,
-the label limit, the overflow policy, the clip mark and the switch marks, so a
-front end starts from `Theme::default()` and changes single fields.
-`forms-examples` has a working consumer control and theme override.
+the label limit, the overflow policy, the clip mark, the switch marks, the
+alignment of a value (left or right) and a separate style for a selected row
+that accepts no change. A front end starts from `Theme::default()` and changes
+single fields. `forms-examples` has a working consumer control and theme
+override.
+
+`forms::page::placement` places a page inside a display. `Margins` states one
+margin per edge in per-mille of the panel, so a front end can keep a different
+margin on each edge; `Margins::default()` is one tenth on every edge. A
+firmware display and the simulator call the same function.
 
 ## Modal
 

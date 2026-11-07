@@ -25,9 +25,9 @@ firmware, without an emulator and without a build of the consuming image.
 
 | Item | Content |
 | --- | --- |
-| `Config` | The panel size, the font cell, the fewest columns and rows, and the margin |
+| `Config` | The panel size, the font cell, the fewest columns and rows, and the margins |
 | `Config::placement` | Where the page sits, from `forms::page::placement` |
-| `Screen` | The RGB framebuffer of the panel and `Screen::draw`, which draws one view |
+| `Screen` | The RGB framebuffer of the panel, `Screen::draw`, and `Screen::set_theme` for the theme that it draws with |
 
 ## Use from another crate
 
@@ -64,7 +64,8 @@ A page that opens modals keeps its own policy. It drives
 
 The consumer sets the panel and the placement. A consumer that draws on a phone
 panel keeps `Config::default()`, which is 1272 by 2772 pixels with a cell of 6 by
-10, forty columns, sixteen rows and a margin of one tenth.
+10, forty columns, sixteen rows and `Margins::default()`, one tenth on every
+edge. `Screen::set_theme` replaces the theme that the panel draws with.
 
 ## The demo site
 

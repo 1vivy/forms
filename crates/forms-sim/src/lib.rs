@@ -43,8 +43,8 @@
 use core::convert::Infallible;
 
 use forms::View;
-use forms::page::{Placement, placement};
-use forms::widgets::FormsWidget;
+use forms::page::{Margins, Placement, placement};
+use forms::widgets::{FormsWidget, Theme};
 use mousefood::embedded_graphics::Pixel;
 use mousefood::embedded_graphics::draw_target::DrawTarget;
 use mousefood::embedded_graphics::geometry::{Dimensions, Point, Size};
@@ -104,8 +104,8 @@ pub struct Config {
     pub columns: u32,
     /// The fewest rows that the page keeps.
     pub rows: u32,
-    /// The divisor of the panel that each edge keeps. Zero keeps no margin.
-    pub margin: u32,
+    /// The margin of each edge, in per-mille of the panel.
+    pub margins: Margins,
 }
 
 impl Default for Config {
@@ -115,7 +115,7 @@ impl Default for Config {
             cell: (6, 10),
             columns: 40,
             rows: 16,
-            margin: 10,
+            margins: Margins::default(),
         }
     }
 }
@@ -132,7 +132,7 @@ impl Config {
     /// ```
     #[must_use]
     pub fn placement(&self) -> Placement {
-        placement(self.panel, self.cell, self.columns, self.rows, self.margin)
+        placement(self.panel, self.cell, self.columns, self.rows, self.margins)
     }
 
     /// Returns the columns that the page shows.
@@ -157,6 +157,7 @@ pub struct Screen {
     config: Config,
     placement: Placement,
     pixels: Vec<u8>,
+    theme: Theme,
 }
 
 impl Screen {
@@ -177,6 +178,7 @@ impl Screen {
             config,
             placement,
             pixels,
+            theme: Theme::default(),
         }
     }
 
@@ -190,6 +192,38 @@ impl Screen {
     #[must_use]
     pub fn placement(&self) -> Placement {
         self.placement
+    }
+
+    /// Returns the theme of the page.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let screen = forms_sim::Screen::new(forms_sim::Config::default());
+    /// assert_eq!(screen.theme(), &forms::widgets::Theme::default());
+    /// ```
+    #[must_use]
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Replaces the theme that the panel draws with.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::widgets::{Alignment, Theme};
+    ///
+    /// let mut screen = forms_sim::Screen::new(forms_sim::Config::default());
+    /// let theme = Theme {
+    ///     value_alignment: Alignment::Left,
+    ///     ..Theme::default()
+    /// };
+    /// screen.set_theme(theme);
+    /// assert_eq!(screen.theme().value_alignment, Alignment::Left);
+    /// ```
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
     }
 
     /// Returns the RGB pixels of the whole panel.
@@ -232,9 +266,12 @@ impl Screen {
                 if full {
                     terminal.clear()?;
                 }
+                let theme = self.theme.clone();
                 terminal
                     .draw(|frame| {
-                        FormsWidget::new(view).render(frame.area(), frame.buffer_mut());
+                        FormsWidget::new(view)
+                            .with_theme(theme)
+                            .render(frame.area(), frame.buffer_mut());
                     })
                     .map(|_| ())
             });

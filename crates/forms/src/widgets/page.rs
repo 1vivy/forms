@@ -316,7 +316,11 @@ impl FormsWidget<'_> {
             style = style.patch(theme.uncertain);
         }
         if selected {
-            style = style.patch(theme.selection);
+            style = style.patch(if row.enabled {
+                theme.selection
+            } else {
+                theme.gray_selected
+            });
         }
         buf.set_style(area, style);
         match &row.decoration {
@@ -672,12 +676,11 @@ fn put_fit(buf: &mut Buffer, area: Rect, text: &str, style: Style, row: &RowView
     let width = u16::try_from(text.chars().count())
         .unwrap_or(0)
         .min(area.width);
-    put(
-        buf,
-        Rect::new(area.right() - width, area.y, width, 1),
-        &text,
-        style,
-    );
+    let left = match theme.value_alignment {
+        crate::widgets::Alignment::Left => area.x,
+        crate::widgets::Alignment::Right => area.right() - width,
+    };
+    put(buf, Rect::new(left, area.y, width, 1), &text, style);
 }
 
 /// Writes text at the start of an area.
@@ -741,4 +744,128 @@ fn wrap(text: &str, width: u16) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FormsWidget;
+    use crate::widgets::{Alignment, Painters, Theme};
+    use crate::{Decoration, Presentation, RowView, Truncation, View};
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::style::Color;
+    use ratatui_core::widgets::Widget;
+
+    /// Builds a page with one row.
+    fn view(enabled: bool) -> View {
+        View {
+            path: Vec::new(),
+            title: String::from("Setup"),
+            rows: vec![RowView {
+                key: crate::Key(1),
+                label: String::from("Mode"),
+                value: String::from("On"),
+                help: String::new(),
+                decoration: Decoration::Toggle(true),
+                selectable: true,
+                enabled,
+                uncertain: false,
+                presentation: Presentation {
+                    label_limit: None,
+                    truncation: Truncation::End,
+                },
+            }],
+            selected: Some(0),
+            help: String::new(),
+            editor: None,
+            message: None,
+            modal: None,
+        }
+    }
+
+    /// Returns the row that contains `text`.
+    fn row_of(buffer: &Buffer, text: &str) -> Option<u16> {
+        (0..buffer.area.height).find(|y| {
+            let line: alloc::string::String = (0..buffer.area.width)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect();
+            line.contains(text)
+        })
+    }
+
+    /// Returns the column of the first value character of `text`.
+    fn column(buffer: &Buffer, text: &str) -> Option<u16> {
+        for y in 0..buffer.area.height {
+            let line: alloc::string::String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            if line.contains("Mode")
+                && let Some(byte) = line.find(text)
+            {
+                return u16::try_from(byte).ok();
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_default_theme_keeps_values_right_aligned() {
+        let view = view(true);
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&view)
+            .with_painters(Painters::new())
+            .render(area, &mut buffer);
+        // The value ends at the last cell before the right border.
+        let y = row_of(&buffer, "Mode").expect("the row draws");
+        let last = area.width - 2;
+        assert_eq!(buffer[(last, y)].symbol(), "n");
+    }
+
+    #[test]
+    fn a_left_alignment_moves_the_value_to_its_column_start() {
+        let view = view(true);
+        let theme = Theme {
+            value_alignment: Alignment::Left,
+            ..Theme::default()
+        };
+        let area = Rect::new(0, 0, 40, 8);
+        let mut right = Buffer::empty(area);
+        let mut left = Buffer::empty(area);
+        FormsWidget::new(&view).render(area, &mut right);
+        FormsWidget::new(&view)
+            .with_theme(theme)
+            .render(area, &mut left);
+        let right_column = column(&right, "On").expect("the value draws");
+        let left_column = column(&left, "On").expect("the value draws");
+        assert!(left_column < right_column);
+        let y = row_of(&left, "Mode").expect("the row draws");
+        assert_ne!(left[(area.width - 2, y)].symbol(), "n");
+    }
+
+    #[test]
+    fn a_selected_row_that_accepts_no_change_uses_the_gray_style() {
+        let view = view(false);
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&view)
+            .with_theme(theme.clone())
+            .render(area, &mut buffer);
+        let y = (0..area.height)
+            .find(|y| {
+                let line: alloc::string::String =
+                    (0..area.width).map(|x| buffer[(x, *y)].symbol()).collect();
+                line.contains("Mode")
+            })
+            .expect("the row draws");
+        assert_eq!(
+            buffer[(1, y)].bg,
+            theme.gray_selected.bg.unwrap_or(Color::Reset)
+        );
+        assert_ne!(buffer[(1, y)].bg, Color::Reset);
+    }
 }
