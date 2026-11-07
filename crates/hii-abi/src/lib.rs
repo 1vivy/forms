@@ -42,16 +42,26 @@ pub mod op {
     pub const CHECKBOX: u8 = 0x06;
     /// `EFI_IFR_NUMERIC_OP`.
     pub const NUMERIC: u8 = 0x07;
+    /// `EFI_IFR_PASSWORD_OP`.
+    pub const PASSWORD: u8 = 0x08;
     /// `EFI_IFR_ONE_OF_OPTION_OP`.
     pub const ONE_OF_OPTION: u8 = 0x09;
     /// `EFI_IFR_SUPPRESS_IF_OP`.
     pub const SUPPRESS_IF: u8 = 0x0A;
+    /// `EFI_IFR_LOCKED_OP`.
+    pub const LOCKED: u8 = 0x0B;
     /// `EFI_IFR_ACTION_OP`.
     pub const ACTION: u8 = 0x0C;
+    /// `EFI_IFR_RESET_BUTTON_OP`.
+    pub const RESET_BUTTON: u8 = 0x0D;
     /// `EFI_IFR_FORM_SET_OP`.
     pub const FORM_SET: u8 = 0x0E;
     /// `EFI_IFR_REF_OP` (forms 1 to 4).
     pub const REF: u8 = 0x0F;
+    /// `EFI_IFR_NO_SUBMIT_IF_OP`.
+    pub const NO_SUBMIT_IF: u8 = 0x10;
+    /// `EFI_IFR_INCONSISTENT_IF_OP`.
+    pub const INCONSISTENT_IF: u8 = 0x11;
     /// `EFI_IFR_EQ_ID_VAL_OP`.
     pub const EQ_ID_VAL: u8 = 0x12;
     /// `EFI_IFR_EQ_ID_ID_OP`.
@@ -68,6 +78,12 @@ pub mod op {
     pub const GRAY_OUT_IF: u8 = 0x19;
     /// `EFI_IFR_STRING_OP`.
     pub const STRING: u8 = 0x1C;
+    /// `EFI_IFR_REFRESH_OP`.
+    pub const REFRESH: u8 = 0x1D;
+    /// `EFI_IFR_DISABLE_IF_OP`.
+    pub const DISABLE_IF: u8 = 0x1E;
+    /// `EFI_IFR_ORDERED_LIST_OP`.
+    pub const ORDERED_LIST: u8 = 0x23;
     /// `EFI_IFR_VARSTORE_OP`.
     pub const VARSTORE: u8 = 0x24;
     /// `EFI_IFR_VARSTORE_NAME_VALUE_OP`.
@@ -82,6 +98,32 @@ pub mod op {
     pub const DEFAULTSTORE: u8 = 0x5C;
     /// `EFI_IFR_GUID_OP`.
     pub const GUID: u8 = 0x5F;
+    /// `EFI_IFR_REFRESH_ID_OP`.
+    pub const REFRESH_ID: u8 = 0x62;
+    /// `EFI_IFR_WARNING_IF_OP`.
+    pub const WARNING_IF: u8 = 0x63;
+    /// `EFI_IFR_EQUAL_OP`.
+    pub const EQUAL: u8 = 0x2F;
+    /// `EFI_IFR_NOT_EQUAL_OP`.
+    pub const NOT_EQUAL: u8 = 0x30;
+    /// `EFI_IFR_GREATER_THAN_OP`.
+    pub const GREATER_THAN: u8 = 0x31;
+    /// `EFI_IFR_GREATER_EQUAL_OP`.
+    pub const GREATER_EQUAL: u8 = 0x32;
+    /// `EFI_IFR_LESS_THAN_OP`.
+    pub const LESS_THAN: u8 = 0x33;
+    /// `EFI_IFR_LESS_EQUAL_OP`.
+    pub const LESS_EQUAL: u8 = 0x34;
+    /// `EFI_IFR_QUESTION_REF1_OP`.
+    pub const QUESTION_REF1: u8 = 0x40;
+    /// `EFI_IFR_UINT8_OP`.
+    pub const UINT8: u8 = 0x42;
+    /// `EFI_IFR_UINT16_OP`.
+    pub const UINT16: u8 = 0x43;
+    /// `EFI_IFR_UINT32_OP`.
+    pub const UINT32: u8 = 0x44;
+    /// `EFI_IFR_UINT64_OP`.
+    pub const UINT64: u8 = 0x45;
     /// `EFI_IFR_TRUE_OP`.
     pub const TRUE: u8 = 0x46;
     /// `EFI_IFR_FALSE_OP`.
@@ -144,6 +186,8 @@ pub mod flags {
     pub const DISPLAY: u8 = 0x30;
     /// `EFI_IFR_DISPLAY_UINT_DEC`.
     pub const DISPLAY_UINT_DEC: u8 = 0x10;
+    /// `EFI_IFR_UNIQUE_SET` of an ordered list.
+    pub const ORDERED_UNIQUE_SET: u8 = 0x01;
 }
 
 /// Value types of `EFI_IFR_TYPE_VALUE` (`EFI_IFR_TYPE_*`).
@@ -162,6 +206,8 @@ pub mod value_type {
     pub const STRING: u8 = 0x07;
     /// `EFI_IFR_TYPE_ACTION`.
     pub const ACTION: u8 = 0x0A;
+    /// `EFI_IFR_TYPE_BUFFER`.
+    pub const BUFFER: u8 = 0x0B;
 }
 
 /// Byte offsets inside a `EFI_HII_STRING_PACKAGE_HDR`.

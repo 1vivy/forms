@@ -1,10 +1,7 @@
 //! Decoding of a compiled foreign formset and refusal of malformed input.
 
-use forms::{
-    Choice, Expr, FormId, QuestionFlags, QuestionId, Statement, Storage, VarStoreId, VarStoreKind,
-    Width,
-};
-use hii_ifr::{DecodeError, decode};
+use forms::{Control, Expr};
+use hii_ifr::{DecodeError, QuestionKind, Storage, Width, decode};
 
 /// The compiled `DtPlatformDxe` formset from the Mu-Silicium build.
 const FIXTURE: &[u8] = include_bytes!("fixtures/dt_platform_hii.bin");
@@ -31,7 +28,7 @@ fn list(forms: &[u8], packages: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut out = vec![0u8; 16];
     let total = 20 + 4 + forms.len() + body.len();
     out.extend_from_slice(&(total as u32).to_le_bytes());
-    out.extend_from_slice(&(forms_size | (u32::from(0x02u8) << 24)).to_le_bytes());
+    out.extend_from_slice(&(forms_size | (0x02u32 << 24)).to_le_bytes());
     out.extend_from_slice(forms);
     out.extend_from_slice(&body);
     out
@@ -41,89 +38,61 @@ fn list(forms: &[u8], packages: &[(u8, Vec<u8>)]) -> Vec<u8> {
 fn compiled_formset_decodes() {
     let sets = decode(FIXTURE).expect("decode");
     assert_eq!(sets.len(), 1);
-    let set = &sets[0];
+    let decoded = &sets[0];
     assert_eq!(
-        set.guid,
+        decoded.export.guid,
         [
             0x0d, 0x24, 0x7a, 0x2b, 0xad, 0xd5, 0xd6, 0x4f, 0xbe, 0x1c, 0xdf, 0xa4, 0x41, 0x5f,
             0x55, 0x26
         ]
     );
-    assert_eq!(set.title, "O/S Hardware Description Selection");
+    assert_eq!(decoded.set.title, "O/S Hardware Description Selection");
     assert_eq!(
-        set.help,
+        decoded.set.help,
         "Press <Enter> to choose between ACPI and DT hardware descriptions."
     );
     assert_eq!(
-        set.class_guids,
+        decoded.export.class_guids,
         vec![[
             0x71, 0x99, 0x03, 0x93, 0x45, 0x85, 0x04, 0x4b, 0xb4, 0x5e, 0x32, 0xeb, 0x83, 0x26,
             0x04, 0x0e
         ]]
     );
-    assert_eq!(set.varstores.len(), 1);
-    assert_eq!(
-        set.varstores[0],
-        forms::VarStore {
-            id: VarStoreId(1),
-            guid: set.guid,
-            name: "DtAcpiPref".into(),
-            size: 4,
-            kind: VarStoreKind::Efi { attributes: 3 },
-        }
-    );
-    assert_eq!(set.forms.len(), 1);
-    let form = &set.forms[0];
-    assert_eq!(form.id, FormId(0x1000));
-    assert_eq!(form.title, "O/S Hardware Description Selection");
-    assert_eq!(form.items.len(), 2);
-    let Statement::OneOf {
-        question,
-        width,
-        choices,
-    } = &form.items[0].statement
-    else {
-        panic!(
-            "expected a one-of statement, got {:?}",
-            form.items[0].statement
-        );
+    assert_eq!(decoded.export.varstores.len(), 1);
+    assert_eq!(decoded.export.varstores[0].name, "DtAcpiPref");
+    assert_eq!(decoded.export.varstores[0].size, 4);
+    assert_eq!(decoded.set.pages.len(), 1);
+    let page = &decoded.set.pages[0];
+    assert_eq!(page.title, "O/S Hardware Description Selection");
+    assert_eq!(page.rows.len(), 2);
+    let row = &page.rows[0];
+    let Control::Choice(choices) = &row.control else {
+        panic!("expected a choice, got {:?}", row.control);
     };
-    assert_eq!(question.id, QuestionId(1));
-    assert_eq!(question.prompt, "O/S Hardware Description");
+    assert_eq!(row.label, "O/S Hardware Description");
     assert_eq!(
-        question.help,
+        row.help,
         "Select the hardware description that will be exposed to the O/S."
     );
     assert_eq!(
+        choices
+            .iter()
+            .map(|choice| choice.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Device Tree", "ACPI"]
+    );
+    assert_eq!(choices[1].value, 1);
+    let question = &decoded.export.questions[0];
+    assert_eq!(question.question, 1);
+    assert_eq!(
         question.storage,
         Storage::Offset {
-            varstore: VarStoreId(1),
+            store: 1,
             offset: 0
         }
     );
-    assert_eq!(question.flags, QuestionFlags(0x14));
-    assert_eq!(*width, Width::U8);
-    assert_eq!(
-        choices,
-        &vec![
-            Choice {
-                text: "Device Tree".into(),
-                value: 0,
-                default: true
-            },
-            Choice {
-                text: "ACPI".into(),
-                value: 1,
-                default: false
-            },
-        ]
-    );
-    assert_eq!(
-        form.items[1].statement,
-        Statement::Subtitle {
-            text: String::new()
-        }
-    );
+    assert_eq!(question.kind, QuestionKind::Number(Width::U8));
+    assert_eq!(page.rows[1].control, Control::Heading);
 }
 
 #[test]
@@ -220,7 +189,7 @@ fn unknown_packages_are_skipped() {
 }
 
 #[test]
-fn ref5_statements_are_skipped() {
+fn a_short_ref_keeps_a_link_row() {
     let mut forms = op(0x0E, true, &[0u8; 21]);
     forms.extend_from_slice(&op(0x01, true, &[1, 0, 0, 0]));
     forms.extend_from_slice(&op(0x0F, false, &[0u8; 11]));
@@ -229,20 +198,14 @@ fn ref5_statements_are_skipped() {
     forms.extend_from_slice(&op(0x29, false, &[]));
 
     let sets = decode(&list(&forms, &[])).expect("decode");
-    let items = &sets[0].forms[0].items;
-    assert_eq!(items.len(), 1);
-    assert_eq!(
-        items[0].statement,
-        Statement::Text {
-            prompt: String::new(),
-            help: String::new(),
-            value: String::new(),
-        }
-    );
+    let rows = &sets[0].set.pages[0].rows;
+    assert_eq!(rows.len(), 2);
+    assert!(matches!(rows[0].control, Control::Link(_)));
+    assert_eq!(rows[1].control, Control::Text(String::new()));
 }
 
 #[test]
-fn unknown_statements_are_skipped_and_unknown_expressions_are_unsupported() {
+fn unknown_statements_stay_visible_and_unknown_expressions_are_unavailable() {
     let mut forms = op(0x0E, true, &[0u8; 21]);
     forms.extend_from_slice(&op(0x01, true, &[1, 0, 0, 0]));
     forms.extend_from_slice(&op(0x99, true, &[]));
@@ -257,16 +220,11 @@ fn unknown_statements_are_skipped_and_unknown_expressions_are_unsupported() {
 
     let sets = decode(&list(&forms, &[])).expect("decode");
     assert_eq!(sets.len(), 1);
-    assert_eq!(sets[0].forms.len(), 1);
-    let items = &sets[0].forms[0].items;
-    assert_eq!(items.len(), 1);
-    assert_eq!(
-        items[0].statement,
-        Statement::Text {
-            prompt: String::new(),
-            help: String::new(),
-            value: String::new()
-        }
-    );
-    assert_eq!(items[0].suppress_if, Some(Expr::Unsupported));
+    let rows = &sets[0].set.pages[0].rows;
+    // The foreign scope stays visible, and so does the text inside it.
+    assert_eq!(rows.len(), 3);
+    assert!(matches!(rows[0].control, Control::Unsupported(_)));
+    assert_eq!(rows[1].control, Control::Text(String::new()));
+    assert!(rows[1].hidden.is_none());
+    assert!(matches!(rows[2].hidden, Some(Expr::Unavailable(_))));
 }

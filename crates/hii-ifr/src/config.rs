@@ -24,7 +24,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
-use forms::Guid;
+use crate::model::Guid;
 
 /// One block of a `<ConfigResp>`.
 #[derive(Clone, Debug, PartialEq, Eq)]

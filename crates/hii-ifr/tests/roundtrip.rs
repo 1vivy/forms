@@ -1,384 +1,341 @@
 //! Round trips of the complete model through the encoder and decoder.
 
 use forms::{
-    Choice, Expr, Form, FormId, FormSet, Item, Question, QuestionFlags, QuestionId, Statement,
-    Storage, VarStore, VarStoreId, VarStoreKind, Width,
+    Builder, Choice, Control, Expr, FormSet, Key, Operand, Refresh, Target, Truncation, Validation,
+    Value,
 };
-use hii_ifr::{decode, encode};
+use hii_ifr::{Export, QuestionKind, Storage, Width, decode, descriptor, encode};
 
-/// Returns a question with a storage and no flags.
-fn question(id: u16, storage: Storage) -> Question {
-    Question {
-        id: QuestionId(id),
-        prompt: format!("Prompt {id}"),
-        help: format!("Help {id}"),
-        storage,
-        flags: QuestionFlags::default(),
+/// Builds a set that uses every control and condition.
+fn model() -> FormSet {
+    let mut builder = Builder::new(Key(1), "Platform").help("Platform settings");
+    builder.page("Main");
+    builder.row("State", Control::Heading);
+    builder.row("Firmware", Control::Text(String::from("2.1")));
+    builder
+        .row("Advanced", Control::Link(Target::page(Key(0))))
+        .set_help("Open the advanced page");
+    builder.row("Apply", Control::Action);
+    builder
+        .row("Secure boot", Control::Toggle)
+        .set_binding(Key(10));
+    builder
+        .row(
+            "Mode",
+            Control::Choice(vec![Choice::new("Fast", 1), Choice::new("Safe", 2)]),
+        )
+        .set_binding(Key(11));
+    builder
+        .row(
+            "Cores",
+            Control::Number {
+                minimum: 1,
+                maximum: 64,
+                step: 1,
+            },
+        )
+        .set_binding(Key(12));
+    builder
+        .row(
+            "Name",
+            Control::TextInput {
+                minimum: 1,
+                maximum: 16,
+                secret: false,
+            },
+        )
+        .set_binding(Key(13));
+    builder
+        .row(
+            "Password",
+            Control::TextInput {
+                minimum: 4,
+                maximum: 12,
+                secret: true,
+            },
+        )
+        .set_binding(Key(14));
+    builder
+        .row(
+            "Boot order",
+            Control::OrderedList {
+                choices: vec![
+                    Choice::new("Disk", 1),
+                    Choice::new("Network", 2),
+                    Choice::new("USB", 3),
+                ],
+                maximum: 3,
+            },
+        )
+        .set_binding(Key(15));
+    builder.row("Restore defaults", Control::Reset(Key(40)));
+    builder.row(
+        "Progress",
+        Control::Progress {
+            current: 2,
+            total: Some(5),
+        },
+    );
+    builder.row("Separator", Control::Divider);
+    builder.row(
+        "Consumer",
+        Control::Custom {
+            kind: Key(7),
+            data: vec![1, 2, 3],
+        },
+    );
+    builder.defaults(
+        Key(40),
+        "Factory",
+        [(Key(10), Value::Bool(false)), (Key(11), Value::Number(2))],
+    );
+    builder.page("Advanced");
+    builder.row("Back", Control::Link(Target::page(Key(0))));
+    let mut set = builder.build();
+    let main = set.pages[0].key;
+    // Point both links at the advanced page.
+    if let Some(advanced) = set.pages.get(1) {
+        let advanced = advanced.key;
+        for row in &mut set.pages[0].rows {
+            if let Control::Link(target) = &mut row.control {
+                target.page = advanced;
+            }
+        }
+        let _ = main;
     }
+    set
 }
 
-/// Builds a formset that uses every supported statement and condition.
-fn model() -> FormSet {
-    let buffer = VarStore {
-        id: VarStoreId(1),
-        guid: [0x01; 16],
-        name: "Buffer".into(),
-        size: 32,
-        kind: VarStoreKind::Buffer,
-    };
-    let efi = VarStore {
-        id: VarStoreId(2),
-        guid: [0x02; 16],
-        name: "DtAcpiPref".into(),
-        size: 4,
-        kind: VarStoreKind::Efi { attributes: 3 },
-    };
-    let named = VarStore {
-        id: VarStoreId(3),
-        guid: [0x03; 16],
-        name: String::new(),
-        size: 0,
-        kind: VarStoreKind::NameValue,
-    };
-    let offset = |id, offset| Storage::Offset {
-        varstore: VarStoreId(id),
-        offset,
-    };
-    let name = |id: u16, name: &str| Storage::Name {
-        varstore: VarStoreId(id),
-        name: name.into(),
-    };
+/// Encodes and decodes a set.
+fn round_trip(set: &FormSet) -> (forms::FormSet, Export) {
+    let export = descriptor(set, [0x42; 16]);
+    let list = encode(set, &export, [0x17; 16]).expect("encode");
+    let decoded = decode(&list).expect("decode");
+    assert_eq!(decoded.len(), 1);
+    let decoded = decoded.into_iter().next().unwrap();
+    (decoded.set, decoded.export)
+}
 
-    let list = Expr::EqualList {
-        question: QuestionId(0x21),
-        values: vec![1, 4, 9],
+#[test]
+fn every_control_survives_the_round_trip() {
+    let set = model();
+    let (decoded, export) = round_trip(&set);
+    assert_eq!(decoded.title, "Platform");
+    assert_eq!(decoded.pages.len(), 2);
+    assert_eq!(decoded.pages[0].title, "Main");
+    let rows = &decoded.pages[0].rows;
+    assert!(matches!(rows[0].control, Control::Heading));
+    assert_eq!(rows[1].control, Control::Text(String::from("2.1")));
+    assert!(matches!(rows[2].control, Control::Link(_)));
+    assert_eq!(rows[3].control, Control::Action);
+    assert_eq!(rows[4].control, Control::Toggle);
+    let Control::Choice(choices) = &rows[5].control else {
+        panic!("expected a choice");
     };
-    let conditions = [
-        Expr::True,
-        Expr::False,
-        Expr::Not(Box::new(Expr::False)),
-        Expr::And(Box::new(Expr::True), Box::new(Expr::False)),
-        Expr::Or(Box::new(list.clone()), Box::new(Expr::True)),
-        Expr::EqualValue {
-            question: QuestionId(0x30),
-            value: 0x1234,
-        },
-        list,
-        Expr::EqualQuestion {
-            first: QuestionId(0x30),
-            second: QuestionId(0x31),
-        },
-    ];
+    assert_eq!(choices.len(), 2);
+    assert_eq!(choices[0].label, "Fast");
+    let Control::Number {
+        minimum,
+        maximum,
+        step,
+    } = &rows[6].control
+    else {
+        panic!("expected a number");
+    };
+    assert_eq!((*minimum, *maximum, *step), (1, 64, 1));
+    let Control::TextInput {
+        minimum,
+        maximum,
+        secret,
+    } = &rows[7].control
+    else {
+        panic!("expected text");
+    };
+    assert_eq!((*minimum, *maximum, *secret), (1, 16, false));
+    let Control::TextInput { secret, .. } = &rows[8].control else {
+        panic!("expected a password");
+    };
+    assert!(*secret);
+    let Control::OrderedList { choices, maximum } = &rows[9].control else {
+        panic!("expected an ordered list");
+    };
+    assert_eq!(*maximum, 3);
+    assert_eq!(choices.len(), 3);
+    assert!(matches!(rows[10].control, Control::Reset(_)));
+    // The descriptor keeps the question identity and the storage offsets.
+    assert_eq!(export.questions.len(), 7);
+    assert_eq!(export.questions[0].kind, QuestionKind::Action);
+    let toggle = export
+        .questions
+        .iter()
+        .find(|question| question.kind == QuestionKind::Bool)
+        .expect("toggle");
+    assert_eq!(toggle.question, 2);
+    assert_eq!(
+        toggle.storage,
+        Storage::Offset {
+            store: 1,
+            offset: 0
+        }
+    );
+    assert_eq!(export.questions[2].kind, QuestionKind::Number(Width::U8));
+    assert_eq!(export.questions[4].bytes, 32);
+    assert_eq!(export.questions[5].bytes, 24);
+    assert_eq!(export.questions[6].kind, QuestionKind::OrderedList);
+    assert_eq!(export.guid, [0x42; 16]);
+}
 
-    let mut items = vec![
-        Item::from(Statement::Subtitle {
-            text: "State".into(),
-        }),
-        Item::from(Statement::Text {
-            prompt: "Read only".into(),
-            help: "A value shown to the person".into(),
-            value: "Enabled".into(),
-        }),
-        Item::from(Statement::Goto {
-            prompt: "Next".into(),
-            help: "Open the next page".into(),
-            form: FormId(2),
-            question: None,
-        }),
-        Item::from(Statement::Goto {
-            prompt: "Callback".into(),
-            help: "Open with a question".into(),
-            form: FormId(2),
-            question: Some(QuestionId(0x0F)),
-        }),
-        Item::from(Statement::Action {
-            question: question(0x10, offset(2, 0)),
-        }),
-        Item::from(Statement::Checkbox {
-            question: question(0x11, offset(1, 0)),
-            default: true,
-        }),
-        Item::from(Statement::Checkbox {
-            question: question(0x12, offset(1, 1)),
-            default: false,
-        }),
-        Item::from(Statement::OneOf {
-            question: question(0x13, offset(1, 2)),
-            width: Width::U8,
-            choices: vec![
-                Choice {
-                    text: "One".into(),
-                    value: 1,
-                    default: false,
-                },
-                Choice {
-                    text: "Two".into(),
-                    value: 2,
-                    default: true,
-                },
-                Choice {
-                    text: "Three".into(),
-                    value: 3,
-                    default: false,
-                },
-            ],
-        }),
-        Item::from(Statement::Numeric {
-            question: question(0x14, offset(2, 0)),
-            width: Width::U8,
-            minimum: 1,
-            maximum: 9,
-            step: 2,
-        }),
-        Item::from(Statement::Numeric {
-            question: question(0x15, offset(2, 1)),
-            width: Width::U16,
-            minimum: 0x100,
-            maximum: 0xFFFF,
-            step: 0,
-        }),
-        Item::from(Statement::Numeric {
-            question: question(0x16, offset(2, 2)),
-            width: Width::U32,
-            minimum: 0x10000,
-            maximum: u32::MAX as u64,
-            step: 1,
-        }),
-        Item::from(Statement::Numeric {
-            question: question(0x17, offset(2, 3)),
-            width: Width::U64,
-            minimum: 0,
-            maximum: u64::MAX,
-            step: 1,
-        }),
-        Item::from(Statement::TextInput {
-            question: question(0x18, name(3, "Title")),
+#[test]
+fn a_decoded_set_encodes_again_unchanged() {
+    let set = model();
+    let (decoded, export) = round_trip(&set);
+    let list = encode(&decoded, &export, [0x17; 16]).expect("re-encode");
+    let again = decode(&list).expect("re-decode");
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].set, decoded);
+}
+
+#[test]
+fn conditions_validate_and_refresh_round_trip() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder.row("Mode", Control::Toggle).set_binding(Key(10));
+    let row = builder.row(
+        "Cores",
+        Control::Number {
             minimum: 1,
             maximum: 8,
-        }),
-    ];
-
-    for (index, condition) in conditions.iter().enumerate() {
-        if index % 2 == 0 {
-            items[index].suppress_if = Some(condition.clone());
-        } else {
-            items[index].gray_out_if = Some(condition.clone());
-        }
-    }
-    items[12].suppress_if = Some(Expr::And(
-        Box::new(Expr::EqualValue {
-            question: QuestionId(0x13),
-            value: 2,
-        }),
-        Box::new(Expr::Not(Box::new(Expr::EqualQuestion {
-            first: QuestionId(0x14),
-            second: QuestionId(0x15),
-        }))),
+            step: 1,
+        },
+    );
+    row.set_binding(Key(11));
+    row.hidden = Some(Expr::Equal(
+        Operand::Field(Key(10)),
+        Operand::Literal(Value::Bool(true)),
     ));
-
-    FormSet {
-        guid: [0x42; 16],
-        title: "Platform".into(),
-        help: "Platform settings".into(),
-        class_guids: vec![[0x11; 16], [0x12; 16]],
-        varstores: vec![buffer, efi, named],
-        forms: vec![
-            Form {
-                id: FormId(1),
-                title: "Main".into(),
-                items,
-            },
-            Form {
-                id: FormId(2),
-                title: "Second".into(),
-                items: vec![Item::from(Statement::Subtitle {
-                    text: "Empty".into(),
-                })],
-            },
-        ],
-    }
-}
-
-#[test]
-fn round_trip_keeps_the_model() {
-    let set = model();
-    let bytes = encode(&set, [0x55; 16]).expect("encode");
-    let sets = decode(&bytes).expect("decode");
-    assert_eq!(sets, vec![set]);
-}
-
-/// Builds a formset with one form and the given stores and items.
-fn page(varstores: Vec<VarStore>, items: Vec<Item>) -> FormSet {
-    FormSet {
-        guid: [0x5A; 16],
-        title: "Buffer page".into(),
-        help: String::new(),
-        class_guids: Vec::new(),
-        varstores,
-        forms: vec![Form {
-            id: FormId(1),
-            title: "Main".into(),
-            items,
-        }],
-    }
-}
-
-#[test]
-fn buffer_store_round_trip_keeps_guid_name_and_size() {
-    let store = VarStore {
-        id: VarStoreId(7),
-        guid: [
-            0x90, 0x81, 0x72, 0x63, 0x54, 0x45, 0x36, 0x27, 0x18, 0x09, 0xFA, 0xEB, 0xDC, 0xCD,
-            0xBE, 0xAF,
-        ],
-        name: "SetupBuffer".into(),
-        size: 0x0123,
-        kind: VarStoreKind::Buffer,
-    };
-    let set = page(vec![store.clone()], Vec::new());
-    let decoded = decode(&encode(&set, [0x33; 16]).expect("encode")).expect("decode");
-
-    assert_eq!(decoded.len(), 1);
-    assert_eq!(decoded[0].varstores.len(), 1);
-    let buffer = &decoded[0].varstores[0];
-    assert_eq!(buffer.id, store.id);
-    assert_eq!(buffer.guid, store.guid);
-    assert_eq!(buffer.name, "SetupBuffer");
-    assert_eq!(buffer.size, 0x0123);
-    assert_eq!(buffer.kind, VarStoreKind::Buffer);
-}
-
-#[test]
-fn offset_questions_round_trip_with_their_store_and_offset() {
-    let at = |varstore, offset| Storage::Offset {
-        varstore: VarStoreId(varstore),
-        offset,
-    };
-    let first = VarStore {
-        id: VarStoreId(4),
-        guid: [0x14; 16],
-        name: "PrimaryBuffer".into(),
-        size: 0x40,
-        kind: VarStoreKind::Buffer,
-    };
-    let second = VarStore {
-        id: VarStoreId(9),
-        guid: [0x29; 16],
-        name: "SecondaryBuffer".into(),
-        size: 0x80,
-        kind: VarStoreKind::Buffer,
-    };
-    let items = vec![
-        Item::from(Statement::Checkbox {
-            question: question(0x31, at(4, 0x0002)),
-            default: true,
-        }),
-        Item::from(Statement::Numeric {
-            question: question(0x32, at(9, 0x0002)),
-            width: Width::U16,
-            minimum: 1,
-            maximum: 0x0FFF,
-            step: 3,
-        }),
-        Item::from(Statement::OneOf {
-            question: question(0x33, at(4, 0x0010)),
-            width: Width::U16,
-            choices: vec![
-                Choice {
-                    text: "Low".into(),
-                    value: 1,
-                    default: false,
-                },
-                Choice {
-                    text: "High".into(),
-                    value: 2,
-                    default: true,
-                },
-            ],
-        }),
-        Item::from(Statement::TextInput {
-            question: question(0x34, at(9, 0x0020)),
-            minimum: 2,
-            maximum: 12,
-        }),
+    row.disabled = Some(Expr::Equal(
+        Operand::Field(Key(11)),
+        Operand::Literal(Value::Number(1)),
+    ));
+    row.validation = vec![
+        Validation::warn(Expr::Bool(true), "This erases data"),
+        Validation::refuse(Expr::Bool(true), "Not allowed"),
+        Validation::block_submit(Expr::Bool(true), "Fix the values"),
     ];
-    let set = page(vec![first, second], items);
-    let decoded = decode(&encode(&set, [0x44; 16]).expect("encode")).expect("decode");
-
-    assert_eq!(decoded, vec![set]);
-    let offsets: Vec<_> = decoded[0].forms[0]
-        .items
-        .iter()
-        .map(|item| item.statement.question().expect("question").storage.clone())
-        .collect();
-    assert_eq!(
-        offsets,
-        vec![at(4, 0x0002), at(9, 0x0002), at(4, 0x0010), at(9, 0x0020)]
-    );
+    row.refresh = Refresh::Periodic(2_500);
+    let set = builder.build();
+    let (decoded, _) = round_trip(&set);
+    let checked = decoded.pages[0].rows.last().expect("row");
+    assert!(matches!(checked.hidden, Some(Expr::Equal(..))));
+    assert!(matches!(checked.disabled, Some(Expr::Equal(..))));
+    assert_eq!(checked.validation.len(), 3);
+    assert_eq!(checked.validation[0].message, "This erases data");
+    assert_eq!(checked.validation[1].kind, forms::ValidationKind::Edit);
+    assert_eq!(checked.validation[2].kind, forms::ValidationKind::Submit);
+    assert_eq!(checked.refresh, Refresh::Periodic(3_000));
 }
 
 #[test]
-fn encode_writes_a_forms_strings_and_end_package() {
-    let bytes = encode(&model(), [0x55; 16]).expect("encode");
-    assert_eq!(&bytes[..16], &[0x55; 16]);
-    assert_eq!(
-        u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize,
-        bytes.len()
-    );
-    let mut kinds = Vec::new();
-    let mut at = 20;
-    while at + 4 <= bytes.len() {
-        let header = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        kinds.push((header >> 24) as u8);
-        at += (header & 0x00FF_FFFF) as usize;
-    }
-    assert_eq!(kinds, vec![0x02, 0x04, 0xDF]);
-}
-
-#[test]
-fn unsupported_conditions_are_refused() {
-    let mut set = model();
-    set.forms[0].items[0].suppress_if = Some(Expr::Unsupported);
-    assert!(encode(&set, [0; 16]).is_err());
-}
-
-#[test]
-fn a_value_wider_than_its_question_is_refused() {
-    let mut set = model();
-    set.forms[0].items[7] = Item::from(Statement::OneOf {
-        question: question(
-            0x13,
-            Storage::Offset {
-                varstore: VarStoreId(1),
-                offset: 2,
+fn an_ordered_list_keeps_its_values_and_limit() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder
+        .row(
+            "Order",
+            Control::OrderedList {
+                choices: vec![Choice::new("A", 1), Choice::new("B", 2)],
+                maximum: 2,
             },
-        ),
-        width: Width::U8,
-        choices: vec![Choice {
-            text: "Too wide".into(),
-            value: 0x100,
-            default: false,
-        }],
-    });
-    assert!(encode(&set, [0; 16]).is_err());
+        )
+        .set_binding(Key(10));
+    let set = builder.build();
+    let (decoded, export) = round_trip(&set);
+    let row = &decoded.pages[0].rows[0];
+    let Control::OrderedList { choices, maximum } = &row.control else {
+        panic!("expected an ordered list");
+    };
+    assert_eq!(*maximum, 2);
+    assert_eq!(choices[1].label, "B");
+    assert_eq!(export.questions[0].kind, QuestionKind::OrderedList);
 }
 
 #[test]
-fn a_non_ascii_store_name_is_refused() {
-    let mut set = model();
-    set.varstores[0].name = "Störe".into();
-    assert!(encode(&set, [0; 16]).is_err());
-}
-
-#[test]
-fn three_class_guids_round_trip_and_four_are_refused() {
-    let mut set = model();
-    set.class_guids = vec![[0x01; 16], [0x02; 16], [0x03; 16]];
-    let decoded = decode(&encode(&set, [0; 16]).expect("encode")).expect("decode");
-    assert_eq!(decoded[0].class_guids, set.class_guids);
-    set.class_guids.push([0x04; 16]);
+fn a_reset_button_names_the_decoded_default_set() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder.row("A", Control::Toggle).set_binding(Key(10));
+    builder.row("Restore", Control::Reset(Key(40)));
+    builder.defaults(Key(40), "Factory", [(Key(10), Value::Bool(false))]);
+    let set = builder.build();
+    let (decoded, _) = round_trip(&set);
+    assert_eq!(decoded.defaults.len(), 1);
+    assert_eq!(decoded.defaults[0].name, "Factory");
+    let restore = &decoded.pages[0].rows[1];
     assert_eq!(
-        encode(&set, [0; 16]),
-        Err(hii_ifr::EncodeError::TooManyClassGuids)
+        restore.control.reset_default(),
+        Some(decoded.defaults[0].key)
     );
+}
+
+#[test]
+fn unsupported_controls_degrade_to_text_rows() {
+    let set = model();
+    let (decoded, _) = round_trip(&set);
+    let rows = &decoded.pages[0].rows;
+    let progress = &rows[11];
+    assert_eq!(progress.control, Control::Text(String::from("2/5")));
+    let divider = &rows[12];
+    assert_eq!(divider.control, Control::Heading);
+    let consumer = &rows[13];
+    assert_eq!(
+        consumer.control,
+        Control::Text(String::from("Consumer control 7"))
+    );
+}
+
+#[test]
+fn presentation_hints_do_not_change_the_ifr_value() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    let row = builder.row("Info", Control::Text(String::from("Long text")));
+    row.presentation = forms::Presentation {
+        label_limit: Some(20),
+        truncation: Truncation::Wrap,
+    };
+    let set = builder.build();
+    let (decoded, _) = round_trip(&set);
+    assert_eq!(
+        decoded.pages[0].rows[0].control,
+        Control::Text(String::from("Long text"))
+    );
+}
+
+#[test]
+fn a_slider_exports_as_a_numeric_question() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder
+        .row(
+            "Timeout",
+            Control::Slider {
+                minimum: 0,
+                maximum: 10,
+                step: 1,
+                unit: String::from("s"),
+                labels: vec![Choice::new("Off", 0)],
+            },
+        )
+        .set_binding(Key(10));
+    let set = builder.build();
+    let (decoded, export) = round_trip(&set);
+    assert_eq!(export.questions[0].kind, QuestionKind::Number(Width::U8));
+    let Control::Number {
+        minimum,
+        maximum,
+        step,
+    } = &decoded.pages[0].rows[0].control
+    else {
+        panic!("expected a numeric question");
+    };
+    assert_eq!((*minimum, *maximum, *step), (0, 10, 1));
 }

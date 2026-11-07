@@ -2,15 +2,19 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
 use forms::{
-    Choice, Expr, Form, FormId, FormSet, Guid, Item, Question, QuestionFlags, QuestionId,
-    Statement, Storage, VarStore, VarStoreId, VarStoreKind, Width,
+    Choice, Control, Expr, FormSet, Key, Operand, Page, Refresh, Row, Target, Validation,
+    ValidationKind, Value,
 };
 
+use crate::model::{
+    Export, FormRef, Guid, QuestionKind, QuestionRef, Storage, VarStore, VarStoreKind, Width,
+};
 use crate::utf16_to_string;
 use hii_abi as abi;
 
@@ -44,6 +48,15 @@ impl fmt::Display for DecodeError {
 
 impl core::error::Error for DecodeError {}
 
+/// One form set with the HII identity that it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoded {
+    /// The application pages.
+    pub set: FormSet,
+    /// The HII identity and storage of the set.
+    pub export: Export,
+}
+
 /// One opcode with the opcodes of its scope.
 struct Node<'a> {
     /// The opcode.
@@ -70,8 +83,29 @@ struct StoreInfo {
     named: bool,
 }
 
-/// Decodes a package list into every formset of its forms packages.
-pub(crate) fn decode(package_list: &[u8]) -> Result<Vec<FormSet>, DecodeError> {
+/// The state of one decoding pass.
+struct Decoding {
+    /// The next key to allocate.
+    next: u64,
+    /// The row key of each question identifier.
+    questions: BTreeMap<u16, Key>,
+    /// The row key of each page, in publication order.
+    pages: Vec<Key>,
+    /// The storage of each question identifier.
+    storage: BTreeMap<u16, Storage>,
+}
+
+impl Decoding {
+    /// Allocates one key.
+    fn key(&mut self) -> Key {
+        let key = Key(self.next);
+        self.next = self.next.saturating_add(1);
+        key
+    }
+}
+
+/// Decodes every form set of a package list.
+pub(crate) fn decode(package_list: &[u8]) -> Result<Vec<Decoded>, DecodeError> {
     if package_list.len() < abi::PACKAGE_LIST_HEADER_SIZE {
         return Err(DecodeError::Truncated);
     }
@@ -82,7 +116,7 @@ pub(crate) fn decode(package_list: &[u8]) -> Result<Vec<FormSet>, DecodeError> {
     }
     let list = &package_list[..total];
 
-    let mut forms = Vec::new();
+    let mut forms: Vec<&[u8]> = Vec::new();
     let mut strings = Vec::new();
     let mut at = abi::PACKAGE_LIST_HEADER_SIZE;
     while at + abi::PACKAGE_HEADER_SIZE <= total {
@@ -113,10 +147,18 @@ pub(crate) fn decode(package_list: &[u8]) -> Result<Vec<FormSet>, DecodeError> {
     let empty = BTreeMap::new();
     let table = select_strings(&strings).unwrap_or(&empty);
     let mut sets = Vec::new();
+    let mut next = 1u64;
     for data in forms {
         let nodes = parse_tree(data)?;
         for node in nodes.iter().filter(|node| node.code == abi::op::FORM_SET) {
-            sets.push(build_formset(node, table)?);
+            let mut decoding = Decoding {
+                next,
+                questions: BTreeMap::new(),
+                pages: Vec::new(),
+                storage: BTreeMap::new(),
+            };
+            sets.push(build_formset(node, table, &mut decoding)?);
+            next = decoding.next;
         }
     }
     Ok(sets)
@@ -175,8 +217,12 @@ fn append<'a>(root: &mut Vec<Node<'a>>, stack: &mut [Node<'a>], node: Node<'a>) 
     }
 }
 
-/// Builds one formset from its opcode.
-fn build_formset(node: &Node<'_>, strings: &BTreeMap<u16, String>) -> Result<FormSet, DecodeError> {
+/// Builds one form set from its opcode.
+fn build_formset(
+    node: &Node<'_>,
+    strings: &BTreeMap<u16, String>,
+    decoding: &mut Decoding,
+) -> Result<Decoded, DecodeError> {
     let payload = node.payload;
     if payload.len() < 21 {
         return Err(DecodeError::BadLength);
@@ -191,7 +237,7 @@ fn build_formset(node: &Node<'_>, strings: &BTreeMap<u16, String>) -> Result<For
     if tail.len() < count * 16 {
         return Err(DecodeError::BadLength);
     }
-    let class_guids = tail
+    let class_guids: Vec<Guid> = tail
         .chunks_exact(16)
         .take(count)
         .filter_map(|chunk| guid_at(chunk, 0))
@@ -207,88 +253,332 @@ fn build_formset(node: &Node<'_>, strings: &BTreeMap<u16, String>) -> Result<For
         }
     }
 
-    let mut forms = Vec::new();
+    let set_key = decoding.key();
+    let mut defaults = Vec::new();
     for child in &node.children {
-        if child.code == abi::op::FORM {
-            forms.push(build_form(child, &varstores, strings)?);
+        if child.code == abi::op::DEFAULTSTORE {
+            let id = read_u16(child.payload, 4).unwrap_or(0);
+            defaults.push((id, text_of(strings, read_u16(child.payload, 0))));
         }
     }
-    Ok(FormSet {
-        guid,
+
+    let form_nodes: Vec<&Node<'_>> = node
+        .children
+        .iter()
+        .filter(|child| child.code == abi::op::FORM)
+        .collect();
+    for _ in &form_nodes {
+        let key = decoding.key();
+        decoding.pages.push(key);
+    }
+    let mut form_refs = Vec::new();
+    for (index, form) in form_nodes.iter().enumerate() {
+        let page_key = decoding.pages[index];
+        let id = read_u16(form.payload, 0).unwrap_or(0);
+        form_refs.push(FormRef {
+            page: page_key,
+            form: id,
+        });
+    }
+
+    for form in &form_nodes {
+        collect_questions(&form.children, decoding);
+    }
+
+    let mut default_values: BTreeMap<u16, BTreeMap<Key, Value>> = BTreeMap::new();
+    let mut pages = Vec::new();
+    for (index, form) in form_nodes.iter().enumerate() {
+        let page = build_page(
+            form,
+            &varstores,
+            strings,
+            decoding,
+            &form_refs,
+            &mut default_values,
+        )?;
+        debug_assert_eq!(page.key, decoding.pages[index]);
+        pages.push(page);
+    }
+
+    let mut set = FormSet {
+        key: set_key,
         title,
         help,
+        pages,
+        defaults: Vec::new(),
+    };
+    for (id, name) in defaults {
+        let key = default_key(id);
+        let values = default_values.remove(&id).unwrap_or_default();
+        set.defaults.push(forms::DefaultSet { key, name, values });
+    }
+
+    let questions = questions_of(&set, decoding);
+    let export = Export {
+        guid,
         class_guids,
-        varstores: varstores.iter().map(|info| info.store.clone()).collect(),
-        forms,
-    })
+        varstores: varstores.into_iter().map(|info| info.store).collect(),
+        forms: form_refs,
+        questions,
+        refresh_events: Vec::new(),
+    };
+    Ok(Decoded { set, export })
 }
 
-/// Builds one form from its opcode.
-fn build_form(
+/// Returns the question descriptors of a decoded set.
+fn questions_of(set: &FormSet, decoding: &Decoding) -> Vec<QuestionRef> {
+    let mut questions = Vec::new();
+    for page in &set.pages {
+        for row in &page.rows {
+            let Some(binding) = row.binding else {
+                continue;
+            };
+            let Some((id, _)) = decoding.questions.iter().find(|(_, key)| **key == binding) else {
+                continue;
+            };
+            let (kind, bytes) = match &row.control {
+                Control::Toggle => (QuestionKind::Bool, 1),
+                Control::Choice(choices) => {
+                    let width =
+                        Width::of(choices.iter().map(|choice| choice.value).max().unwrap_or(0));
+                    (QuestionKind::Number(width), width.bytes() as u16)
+                }
+                Control::Number { maximum, .. } => {
+                    let width = Width::of(*maximum);
+                    (QuestionKind::Number(width), width.bytes() as u16)
+                }
+                Control::TextInput {
+                    maximum, secret, ..
+                } => {
+                    let bytes = (maximum.saturating_mul(2)).min(usize::from(u16::MAX)) as u16;
+                    if *secret {
+                        (QuestionKind::Password { maximum: *maximum }, bytes)
+                    } else {
+                        (QuestionKind::Text { maximum: *maximum }, bytes)
+                    }
+                }
+                Control::OrderedList { maximum, .. } => (
+                    QuestionKind::OrderedList,
+                    (2u32.saturating_mul(*maximum as u32 + 1)).min(u32::from(u16::MAX)) as u16,
+                ),
+                Control::Action => (QuestionKind::Action, 0),
+                _ => continue,
+            };
+            questions.push(QuestionRef {
+                row: row.key,
+                question: *id,
+                storage: decoding.storage.get(id).cloned().unwrap_or(Storage::None),
+                bytes,
+                kind,
+            });
+        }
+    }
+    questions
+}
+
+/// Returns the default set key of a HII default identifier.
+fn default_key(id: u16) -> Key {
+    Key(0xDEFA_0000_0000_0000 | u64::from(id))
+}
+
+/// Allocates a row key for each question opcode.
+fn collect_questions(nodes: &[Node<'_>], decoding: &mut Decoding) {
+    for node in nodes {
+        if is_question(node.code)
+            && let Some(id) = read_u16(node.payload, 4)
+        {
+            let key = decoding.key();
+            decoding.questions.entry(id).or_insert(key);
+        }
+        collect_questions(&node.children, decoding);
+    }
+}
+
+/// Builds one page from its form opcode.
+fn build_page(
     node: &Node<'_>,
     varstores: &[StoreInfo],
     strings: &BTreeMap<u16, String>,
-) -> Result<Form, DecodeError> {
-    let payload = node.payload;
-    if payload.len() < 4 {
+    decoding: &mut Decoding,
+    forms: &[FormRef],
+    defaults: &mut BTreeMap<u16, BTreeMap<Key, Value>>,
+) -> Result<Page, DecodeError> {
+    if node.payload.len() < 4 {
         return Err(DecodeError::BadLength);
     }
-    let id = read_u16(payload, 0).ok_or(DecodeError::BadLength)?;
-    let title = text_of(strings, read_u16(payload, 2));
-    let mut items = Vec::new();
-    decode_nodes(&node.children, None, None, varstores, strings, &mut items)?;
-    Ok(Form {
-        id: FormId(id),
-        title,
-        items,
-    })
+    let id = read_u16(node.payload, 0).ok_or(DecodeError::BadLength)?;
+    let title = text_of(strings, read_u16(node.payload, 2));
+    let key = decoding
+        .pages
+        .iter()
+        .zip(forms)
+        .find(|(_, form)| form.form == id)
+        .map_or(Key::default(), |(page, _)| *page);
+    let mut rows = Vec::new();
+    decode_nodes(
+        &node.children,
+        Condition::default(),
+        varstores,
+        strings,
+        decoding,
+        forms,
+        defaults,
+        &mut rows,
+    )?;
+    Ok(Page { key, title, rows })
+}
+
+/// The conditions that apply to a scope.
+#[derive(Clone, Default)]
+struct Condition {
+    hidden: Option<Expr>,
+    disabled: Option<Expr>,
+    locked: bool,
+    refresh: Option<Refresh>,
+    validation: Vec<Validation>,
+    read_only: bool,
 }
 
 /// Decodes the statements of one scope, with the conditions that apply.
+#[allow(clippy::too_many_arguments)]
 fn decode_nodes(
     nodes: &[Node<'_>],
-    suppress: Option<Expr>,
-    gray: Option<Expr>,
+    condition: Condition,
     varstores: &[StoreInfo],
     strings: &BTreeMap<u16, String>,
-    items: &mut Vec<Item>,
+    decoding: &mut Decoding,
+    forms: &[FormRef],
+    defaults: &mut BTreeMap<u16, BTreeMap<Key, Value>>,
+    rows: &mut Vec<Row>,
 ) -> Result<(), DecodeError> {
     for node in nodes {
         match node.code {
             abi::op::SUPPRESS_IF => {
                 let (expr, rest) = split_condition(node);
-                let condition = merge(suppress.clone(), expr);
-                decode_nodes(rest, condition, gray.clone(), varstores, strings, items)?;
+                let mut condition = condition.clone();
+                condition.hidden = merge(condition.hidden, Some(expr));
+                decode_nodes(
+                    rest, condition, varstores, strings, decoding, forms, defaults, rows,
+                )?;
             }
-            abi::op::GRAY_OUT_IF => {
+            abi::op::DISABLE_IF | abi::op::GRAY_OUT_IF => {
                 let (expr, rest) = split_condition(node);
-                let condition = merge(gray.clone(), expr);
-                decode_nodes(rest, suppress.clone(), condition, varstores, strings, items)?;
+                let mut condition = condition.clone();
+                condition.disabled = merge(condition.disabled, Some(expr));
+                decode_nodes(
+                    rest, condition, varstores, strings, decoding, forms, defaults, rows,
+                )?;
+            }
+            abi::op::WARNING_IF | abi::op::INCONSISTENT_IF | abi::op::NO_SUBMIT_IF => {
+                let (expr, rest) = split_condition(node);
+                let message = text_of(strings, read_u16(node.payload, 0));
+                let timeout = if node.code == abi::op::WARNING_IF {
+                    node.payload.get(2).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                let kind = match node.code {
+                    abi::op::WARNING_IF => ValidationKind::Warning,
+                    abi::op::INCONSISTENT_IF => ValidationKind::Edit,
+                    _ => ValidationKind::Submit,
+                };
+                let mut condition = condition.clone();
+                condition.validation.push(Validation {
+                    kind,
+                    condition: expr,
+                    message,
+                    timeout,
+                });
+                decode_nodes(
+                    rest, condition, varstores, strings, decoding, forms, defaults, rows,
+                )?;
+            }
+            abi::op::LOCKED => {
+                let mut condition = condition.clone();
+                condition.locked = true;
+                decode_nodes(
+                    &node.children,
+                    condition,
+                    varstores,
+                    strings,
+                    decoding,
+                    forms,
+                    defaults,
+                    rows,
+                )?;
+            }
+            abi::op::REFRESH => {
+                let seconds = node.payload.first().copied().unwrap_or(0);
+                let mut condition = condition.clone();
+                condition.refresh = Some(Refresh::Periodic(u64::from(seconds) * 1_000));
+                decode_nodes(
+                    &node.children,
+                    condition,
+                    varstores,
+                    strings,
+                    decoding,
+                    forms,
+                    defaults,
+                    rows,
+                )?;
+            }
+            abi::op::REFRESH_ID => {
+                let mut condition = condition.clone();
+                condition.refresh = Some(Refresh::OnView);
+                decode_nodes(
+                    &node.children,
+                    condition,
+                    varstores,
+                    strings,
+                    decoding,
+                    forms,
+                    defaults,
+                    rows,
+                )?;
             }
             code if is_statement(code) => {
-                if code == abi::op::REF && node.payload.len() < 13 {
-                    continue;
-                }
-                let statement = decode_statement(node, varstores, strings)?;
-                items.push(Item {
-                    statement,
-                    suppress_if: suppress.clone(),
-                    gray_out_if: gray.clone(),
-                });
+                rows.push(build_row(
+                    node, &condition, varstores, strings, decoding, forms, defaults,
+                )?);
             }
-            _ => {}
+            code => {
+                // A foreign opcode stays visible as an inert row.
+                let label = text_of(strings, read_u16(node.payload, 0));
+                let mut row = Row::new(
+                    decoding.key(),
+                    if label.is_empty() {
+                        format!("Opcode 0x{code:02X}")
+                    } else {
+                        label
+                    },
+                    Control::Unsupported(format!("opcode 0x{code:02X}")),
+                );
+                row.hidden = condition.hidden.clone();
+                row.disabled = condition.disabled.clone();
+                rows.push(row);
+                if !node.children.is_empty() {
+                    decode_nodes(
+                        &node.children,
+                        condition.clone(),
+                        varstores,
+                        strings,
+                        decoding,
+                        forms,
+                        defaults,
+                        rows,
+                    )?;
+                }
+            }
         }
     }
     Ok(())
 }
 
 /// Returns the condition expression of a condition scope and its statements.
-fn split_condition<'a, 'b>(node: &'b Node<'a>) -> (Option<Expr>, &'b [Node<'a>]) {
+fn split_condition<'a, 'b>(node: &'b Node<'a>) -> (Expr, &'b [Node<'a>]) {
     match node.children.first() {
-        Some(first) if is_expression(first.code) => {
-            (Some(decode_expression(first)), &node.children[1..])
-        }
-        _ => (None, &node.children[..]),
+        Some(first) if is_expression(first.code) => (decode_expression(first), &node.children[1..]),
+        _ => (Expr::Bool(true), &node.children[..]),
     }
 }
 
@@ -303,15 +593,15 @@ fn merge(outer: Option<Expr>, inner: Option<Expr>) -> Option<Expr> {
 /// Decodes one expression tree.
 fn decode_expression(node: &Node<'_>) -> Expr {
     match node.code {
-        abi::op::TRUE => Expr::True,
-        abi::op::FALSE => Expr::False,
+        abi::op::TRUE => Expr::Bool(true),
+        abi::op::FALSE => Expr::Bool(false),
         abi::op::NOT => match node.children.first() {
             Some(child) => Expr::Not(Box::new(decode_expression(child))),
-            None => Expr::Unsupported,
+            None => Expr::Unavailable(String::from("NOT without an operand")),
         },
         abi::op::AND | abi::op::OR => {
             if node.children.len() != 2 {
-                return Expr::Unsupported;
+                return Expr::Unavailable(String::from("binary operator without two operands"));
             }
             let first = Box::new(decode_expression(&node.children[0]));
             let second = Box::new(decode_expression(&node.children[1]));
@@ -321,248 +611,276 @@ fn decode_expression(node: &Node<'_>) -> Expr {
                 Expr::Or(first, second)
             }
         }
+        abi::op::EQUAL | abi::op::LESS_THAN | abi::op::LESS_EQUAL => {
+            if node.children.len() != 2 {
+                return Expr::Unavailable(String::from("comparison without two operands"));
+            }
+            let first = decode_operand(&node.children[0]);
+            let second = decode_operand(&node.children[1]);
+            match node.code {
+                abi::op::EQUAL => Expr::Equal(first, second),
+                abi::op::LESS_THAN => Expr::Less(first, second),
+                _ => Expr::LessEqual(first, second),
+            }
+        }
         abi::op::EQ_ID_VAL => match (read_u16(node.payload, 0), read_u16(node.payload, 2)) {
-            (Some(question), Some(value)) => Expr::EqualValue {
-                question: QuestionId(question),
-                value: u64::from(value),
-            },
-            _ => Expr::Unsupported,
+            (Some(question), Some(value)) => Expr::Equal(
+                Operand::Field(Key(u64::from(question))),
+                Operand::Literal(Value::Number(u64::from(value))),
+            ),
+            _ => Expr::Unavailable(String::from("EQ_ID_VAL is truncated")),
         },
         abi::op::EQ_ID_ID => match (read_u16(node.payload, 0), read_u16(node.payload, 2)) {
-            (Some(first), Some(second)) => Expr::EqualQuestion {
-                first: QuestionId(first),
-                second: QuestionId(second),
-            },
-            _ => Expr::Unsupported,
+            (Some(first), Some(second)) => Expr::Equal(
+                Operand::Field(Key(u64::from(first))),
+                Operand::Field(Key(u64::from(second))),
+            ),
+            _ => Expr::Unavailable(String::from("EQ_ID_ID is truncated")),
         },
         abi::op::EQ_ID_VAL_LIST => {
             let Some(question) = read_u16(node.payload, 0) else {
-                return Expr::Unsupported;
+                return Expr::Unavailable(String::from("EQ_ID_VAL_LIST is truncated"));
             };
             let Some(count) = read_u16(node.payload, 2) else {
-                return Expr::Unsupported;
+                return Expr::Unavailable(String::from("EQ_ID_VAL_LIST is truncated"));
             };
             let count = usize::from(count);
             if node.payload.len() < 4 + count * 2 {
-                return Expr::Unsupported;
+                return Expr::Unavailable(String::from("EQ_ID_VAL_LIST is truncated"));
             }
             let values = (0..count)
-                .filter_map(|index| read_u16(node.payload, 4 + index * 2).map(u64::from))
+                .filter_map(|index| read_u16(node.payload, 4 + index * 2))
+                .map(|value| Value::Number(u64::from(value)))
                 .collect();
-            Expr::EqualList {
-                question: QuestionId(question),
-                values,
-            }
+            Expr::In(Operand::Field(Key(u64::from(question))), values)
         }
-        _ => Expr::Unsupported,
+        code => Expr::Unavailable(format!("opcode 0x{code:02X}")),
     }
 }
 
-/// Decodes one statement.
-fn decode_statement(
+/// Decodes one operand of a comparison.
+fn decode_operand(node: &Node<'_>) -> Operand {
+    match node.code {
+        abi::op::QUESTION_REF1 => match read_u16(node.payload, 0) {
+            Some(question) => Operand::Field(Key(u64::from(question))),
+            None => Operand::Literal(Value::Bytes(Vec::new())),
+        },
+        abi::op::UINT8 => Operand::Literal(Value::Number(u64::from(
+            node.payload.first().copied().unwrap_or(0),
+        ))),
+        abi::op::UINT16 => Operand::Literal(Value::Number(u64::from(
+            read_u16(node.payload, 0).unwrap_or(0),
+        ))),
+        abi::op::UINT32 => Operand::Literal(Value::Number(u64::from(
+            read_u32(node.payload, 0).unwrap_or(0),
+        ))),
+        abi::op::UINT64 => Operand::Literal(Value::Number(
+            read_width(node.payload, 0, Width::U64).unwrap_or(0),
+        )),
+        abi::op::TRUE => Operand::Literal(Value::Bool(true)),
+        abi::op::FALSE => Operand::Literal(Value::Bool(false)),
+        _ => Operand::Literal(Value::Bytes(Vec::new())),
+    }
+}
+
+/// Builds one row from a statement opcode.
+fn build_row(
     node: &Node<'_>,
+    condition: &Condition,
     varstores: &[StoreInfo],
     strings: &BTreeMap<u16, String>,
-) -> Result<Statement, DecodeError> {
+    decoding: &mut Decoding,
+    forms: &[FormRef],
+    defaults: &mut BTreeMap<u16, BTreeMap<Key, Value>>,
+) -> Result<Row, DecodeError> {
     let payload = node.payload;
+    let question = read_u16(payload, 4).filter(|id| *id != 0);
+    let key = question
+        .and_then(|id| decoding.questions.get(&id).copied())
+        .unwrap_or_else(|| decoding.key());
+    let label = text_of(strings, read_u16(payload, 0));
+    let help = text_of(strings, read_u16(payload, 2));
+    let mut row = Row::new(key, label, Control::Text(String::new()));
+    row.help = help;
+    row.hidden = condition.hidden.clone();
+    row.disabled = condition.disabled.clone();
+    row.locked = condition.locked || condition.read_only;
+    row.validation = condition.validation.clone();
+    if let Some(refresh) = &condition.refresh {
+        row.refresh = refresh.clone();
+    }
     match node.code {
         abi::op::SUBTITLE => {
-            if payload.len() < 5 {
-                return Err(DecodeError::BadLength);
-            }
-            Ok(Statement::Subtitle {
-                text: text_of(strings, read_u16(payload, 0)),
-            })
+            row.control = Control::Heading;
         }
         abi::op::TEXT => {
-            if payload.len() < 6 {
-                return Err(DecodeError::BadLength);
-            }
-            Ok(Statement::Text {
-                prompt: text_of(strings, read_u16(payload, 0)),
-                help: text_of(strings, read_u16(payload, 2)),
-                value: text_of(strings, read_u16(payload, 4)),
-            })
+            row.control = Control::Text(text_of(strings, read_u16(payload, 4)));
         }
         abi::op::REF => {
-            if payload.len() < 13 {
-                return Err(DecodeError::BadLength);
-            }
-            let form = read_u16(payload, 11).ok_or(DecodeError::BadLength)?;
-            let id = if payload.len() >= 15 {
-                read_u16(payload, 13)
-            } else {
-                read_u16(payload, 4)
-            };
-            let question = id.filter(|id| *id != 0).map(QuestionId);
-            Ok(Statement::Goto {
-                prompt: text_of(strings, read_u16(payload, 0)),
-                help: text_of(strings, read_u16(payload, 2)),
-                form: FormId(form),
-                question,
-            })
+            let form = read_u16(payload, 11).unwrap_or(0);
+            let page = forms
+                .iter()
+                .find(|form_ref| form_ref.form == form)
+                .map_or(Key::default(), |form_ref| form_ref.page);
+            row.control = Control::Link(Target {
+                set: None,
+                page,
+                row: None,
+            });
         }
-        abi::op::ACTION => Ok(Statement::Action {
-            question: decode_question(payload, varstores, strings)?,
-        }),
+        abi::op::ACTION => {
+            row.control = Control::Action;
+            row.binding = question.map(|_| key);
+        }
         abi::op::CHECKBOX => {
-            if payload.len() < 12 {
-                return Err(DecodeError::BadLength);
-            }
-            let mut default = payload[11] & abi::flags::CHECKBOX_DEFAULT != 0;
-            for child in &node.children {
-                if child.code == abi::op::DEFAULT
-                    && child.payload.len() >= 4
-                    && child.payload[2] == abi::value_type::BOOLEAN
-                {
-                    default = child.payload[3] != 0;
-                }
-            }
-            Ok(Statement::Checkbox {
-                question: decode_question(payload, varstores, strings)?,
-                default,
-            })
+            row.control = Control::Toggle;
+            row.binding = question.map(|_| key);
         }
         abi::op::ONE_OF => {
-            if payload.len() < 12 {
-                return Err(DecodeError::BadLength);
-            }
-            let width = width_of(payload[11]);
-            let question = decode_question(payload, varstores, strings)?;
-            let mut choices = Vec::new();
-            let mut values = Vec::new();
-            let mut default = None;
-            for child in &node.children {
-                match child.code {
-                    abi::op::ONE_OF_OPTION => {
-                        if let Some((choice, value)) = decode_choice(child, strings) {
-                            values.push((choices.len(), value));
-                            choices.push(choice);
-                        }
-                    }
-                    abi::op::DEFAULT => {
-                        if child.payload.len() >= 4
-                            && let Some(width) = numeric_width(child.payload[2])
-                        {
-                            default = read_width(child.payload, 3, width);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(default) = default {
-                for (index, value) in values {
-                    if value == default
-                        && let Some(choice) = choices.get_mut(index)
-                    {
-                        choice.default = true;
-                    }
-                }
-            }
-            Ok(Statement::OneOf {
-                question,
-                width,
-                choices,
-            })
+            let width = width_of(payload.get(11).copied().unwrap_or(0));
+            let choices = node
+                .children
+                .iter()
+                .filter(|child| child.code == abi::op::ONE_OF_OPTION)
+                .filter_map(|child| decode_choice(child, width, strings))
+                .collect();
+            row.control = Control::Choice(choices);
+            row.binding = question.map(|_| key);
         }
         abi::op::NUMERIC => {
-            if payload.len() < 12 {
-                return Err(DecodeError::BadLength);
-            }
-            let width = width_of(payload[11]);
+            let width = width_of(payload.get(11).copied().unwrap_or(0));
             let base = 12;
-            let minimum = read_width(payload, base, width).ok_or(DecodeError::BadLength)?;
-            let maximum =
-                read_width(payload, base + width.bytes(), width).ok_or(DecodeError::BadLength)?;
-            let step = read_width(payload, base + width.bytes() * 2, width)
-                .ok_or(DecodeError::BadLength)?;
-            Ok(Statement::Numeric {
-                question: decode_question(payload, varstores, strings)?,
-                width,
+            let minimum = read_width(payload, base, width).unwrap_or(0);
+            let maximum = read_width(payload, base + width.bytes(), width).unwrap_or(0);
+            let step = read_width(payload, base + width.bytes() * 2, width).unwrap_or(0);
+            row.control = Control::Number {
                 minimum,
                 maximum,
                 step,
-            })
+            };
+            row.binding = question.map(|_| key);
         }
         abi::op::STRING => {
-            if payload.len() < 14 {
-                return Err(DecodeError::BadLength);
-            }
-            Ok(Statement::TextInput {
-                question: decode_question(payload, varstores, strings)?,
-                minimum: payload[11],
-                maximum: payload[12],
-            })
+            let minimum = usize::from(payload.get(11).copied().unwrap_or(0));
+            let maximum = usize::from(payload.get(12).copied().unwrap_or(0));
+            row.control = Control::TextInput {
+                minimum,
+                maximum,
+                secret: false,
+            };
+            row.binding = question.map(|_| key);
         }
-        _ => Err(DecodeError::BadLength),
+        abi::op::PASSWORD => {
+            let minimum = usize::from(read_u16(payload, 11).unwrap_or(0));
+            let maximum = usize::from(read_u16(payload, 13).unwrap_or(0));
+            row.control = Control::TextInput {
+                minimum,
+                maximum,
+                secret: true,
+            };
+            row.binding = question.map(|_| key);
+        }
+        abi::op::ORDERED_LIST => {
+            let maximum = usize::from(payload.get(11).copied().unwrap_or(0));
+            let choices = node
+                .children
+                .iter()
+                .filter(|child| child.code == abi::op::ONE_OF_OPTION)
+                .filter_map(|child| decode_choice(child, Width::U16, strings))
+                .collect();
+            row.control = Control::OrderedList { choices, maximum };
+            row.binding = question.map(|_| key);
+        }
+        abi::op::RESET_BUTTON => {
+            let id = read_u16(payload, 4).unwrap_or(0);
+            row.read_only = None;
+            row.control = Control::Reset(default_key(id));
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        match child.code {
+            abi::op::REFRESH => {
+                let seconds = child.payload.first().copied().unwrap_or(0);
+                row.refresh = Refresh::Periodic(u64::from(seconds) * 1_000);
+            }
+            abi::op::LOCKED => row.locked = true,
+            _ => {}
+        }
+    }
+    if let Some(binding) = row.binding {
+        for child in &node.children {
+            if child.code == abi::op::DEFAULT && child.payload.len() >= 4 {
+                let id = read_u16(child.payload, 0).unwrap_or(0);
+                let value = decode_default(child);
+                if let Some(value) = value {
+                    defaults.entry(id).or_default().insert(binding, value);
+                }
+            }
+        }
+        if let (Some(id), Some(store)) = (question, varstore_of(payload, varstores, strings)) {
+            decoding.storage.insert(id, store);
+        }
+    }
+    Ok(row)
+}
+
+/// Returns the storage that a question header names.
+fn varstore_of(
+    payload: &[u8],
+    varstores: &[StoreInfo],
+    strings: &BTreeMap<u16, String>,
+) -> Option<Storage> {
+    if payload.len() < 11 {
+        return None;
+    }
+    let store = read_u16(payload, 6)?;
+    let info = read_u16(payload, 8)?;
+    if store == 0 {
+        return Some(Storage::None);
+    }
+    let named = varstores
+        .iter()
+        .find(|store_info| store_info.store.id == store)
+        .is_some_and(|store_info| store_info.named);
+    if named {
+        Some(Storage::Name {
+            store,
+            name: text_of(strings, Some(info)),
+        })
+    } else {
+        Some(Storage::Offset {
+            store,
+            offset: info,
+        })
     }
 }
 
-/// Decodes a one-of option and its stored value.
-fn decode_choice(node: &Node<'_>, strings: &BTreeMap<u16, String>) -> Option<(Choice, u64)> {
+/// Decodes one default value.
+fn decode_default(node: &Node<'_>) -> Option<Value> {
+    let kind = *node.payload.get(2)?;
+    let value = &node.payload[3..];
+    match kind {
+        abi::value_type::BOOLEAN => Some(Value::Bool(value.first().copied().unwrap_or(0) != 0)),
+        kind => {
+            let width = numeric_width(kind)?;
+            Some(Value::Number(read_width(value, 0, width)?))
+        }
+    }
+}
+
+/// Decodes one option of a choice or an ordered list.
+fn decode_choice(node: &Node<'_>, width: Width, strings: &BTreeMap<u16, String>) -> Option<Choice> {
     let payload = node.payload;
     if payload.len() < 4 {
         return None;
     }
     let text = read_u16(payload, 0)?;
-    let flags = payload[2];
-    let width = numeric_width(payload[3])?;
     let value = read_width(payload, 4, width)?;
-    let choice = Choice {
-        text: text_of(strings, Some(text)),
+    Some(Choice {
+        label: text_of(strings, Some(text)),
         value,
-        default: flags & abi::flags::OPTION_DEFAULT != 0,
-    };
-    Some((choice, value))
-}
-
-/// Decodes the question header of a question statement.
-fn decode_question(
-    payload: &[u8],
-    varstores: &[StoreInfo],
-    strings: &BTreeMap<u16, String>,
-) -> Result<Question, DecodeError> {
-    if payload.len() < 11 {
-        return Err(DecodeError::BadLength);
-    }
-    let id = read_u16(payload, 4).ok_or(DecodeError::BadLength)?;
-    let varstore = read_u16(payload, 6).ok_or(DecodeError::BadLength)?;
-    let info = read_u16(payload, 8).ok_or(DecodeError::BadLength)?;
-    let storage = storage_of(varstore, info, varstores, strings);
-    Ok(Question {
-        id: QuestionId(id),
-        prompt: text_of(strings, read_u16(payload, 0)),
-        help: text_of(strings, read_u16(payload, 2)),
-        storage,
-        flags: QuestionFlags(payload[10]),
     })
-}
-
-/// Resolves the storage of a question.
-fn storage_of(
-    varstore: u16,
-    info: u16,
-    varstores: &[StoreInfo],
-    strings: &BTreeMap<u16, String>,
-) -> Storage {
-    if varstore == 0 {
-        return Storage::None;
-    }
-    let Some(store) = varstores.iter().find(|store| store.store.id.0 == varstore) else {
-        return Storage::None;
-    };
-    let varstore = VarStoreId(varstore);
-    if store.named {
-        Storage::Name {
-            varstore,
-            name: text_of(strings, Some(info)),
-        }
-    } else {
-        Storage::Offset {
-            varstore,
-            offset: info,
-        }
-    }
 }
 
 /// Decodes a buffer store.
@@ -576,7 +894,7 @@ fn decode_varstore_buffer(node: &Node<'_>) -> Result<StoreInfo, DecodeError> {
     let size = read_u16(payload, 18).ok_or(DecodeError::BadLength)?;
     Ok(StoreInfo {
         store: VarStore {
-            id: VarStoreId(id),
+            id,
             guid,
             name: ascii_name(&payload[20..]),
             size,
@@ -604,7 +922,7 @@ fn decode_varstore_efi(node: &Node<'_>) -> Result<StoreInfo, DecodeError> {
     };
     Ok(StoreInfo {
         store: VarStore {
-            id: VarStoreId(id),
+            id,
             guid,
             name,
             size,
@@ -624,7 +942,7 @@ fn decode_varstore_name_value(node: &Node<'_>) -> Result<StoreInfo, DecodeError>
     let guid = guid_at(payload, 2).ok_or(DecodeError::BadLength)?;
     Ok(StoreInfo {
         store: VarStore {
-            id: VarStoreId(id),
+            id,
             guid,
             name: String::new(),
             size: 0,
@@ -887,25 +1205,48 @@ fn text_of(strings: &BTreeMap<u16, String>, id: Option<u16>) -> String {
         .unwrap_or_default()
 }
 
+/// Tells whether an opcode is a question.
+fn is_question(code: u8) -> bool {
+    matches!(
+        code,
+        abi::op::CHECKBOX
+            | abi::op::ONE_OF
+            | abi::op::NUMERIC
+            | abi::op::STRING
+            | abi::op::PASSWORD
+            | abi::op::ORDERED_LIST
+            | abi::op::ACTION
+    )
+}
+
 /// Tells whether an opcode is a condition expression.
 fn is_expression(code: u8) -> bool {
     matches!(
         code,
-        0x12..=0x17 | 0x2A..=0x2C | 0x2F..=0x59 | 0x5E | 0x20..=0x22 | 0x28 | 0x60 | 0x64
+        abi::op::TRUE
+            | abi::op::FALSE
+            | abi::op::NOT
+            | abi::op::AND
+            | abi::op::OR
+            | abi::op::EQUAL
+            | abi::op::LESS_THAN
+            | abi::op::LESS_EQUAL
+            | abi::op::EQ_ID_VAL
+            | abi::op::EQ_ID_ID
+            | abi::op::EQ_ID_VAL_LIST
+            | abi::op::QUESTION_REF1
+            | abi::op::UINT8
+            | abi::op::UINT16
+            | abi::op::UINT32
+            | abi::op::UINT64
     )
 }
 
 /// Tells whether an opcode is a statement that the model represents.
 fn is_statement(code: u8) -> bool {
-    matches!(
-        code,
-        abi::op::SUBTITLE
-            | abi::op::TEXT
-            | abi::op::REF
-            | abi::op::ACTION
-            | abi::op::CHECKBOX
-            | abi::op::ONE_OF
-            | abi::op::NUMERIC
-            | abi::op::STRING
-    )
+    is_question(code)
+        || matches!(
+            code,
+            abi::op::SUBTITLE | abi::op::TEXT | abi::op::REF | abi::op::RESET_BUTTON
+        )
 }
