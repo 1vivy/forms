@@ -458,7 +458,10 @@ fn decode_nodes(
 ) -> Result<(), DecodeError> {
     for node in nodes {
         match node.code {
-            abi::op::SUPPRESS_IF => {
+            abi::op::SUPPRESS_IF | abi::op::DISABLE_IF => {
+                // EDK2 does not draw a disabled statement either
+                // (SetupBrowserDxe/Presentation.c:615), so both opcodes hide
+                // the row.
                 let (expr, rest) = split_condition(node);
                 let mut condition = condition.clone();
                 condition.hidden = merge(condition.hidden, Some(expr));
@@ -466,7 +469,7 @@ fn decode_nodes(
                     rest, condition, varstores, strings, decoding, forms, defaults, rows,
                 )?;
             }
-            abi::op::DISABLE_IF | abi::op::GRAY_OUT_IF => {
+            abi::op::GRAY_OUT_IF => {
                 let (expr, rest) = split_condition(node);
                 let mut condition = condition.clone();
                 condition.disabled = merge(condition.disabled, Some(expr));

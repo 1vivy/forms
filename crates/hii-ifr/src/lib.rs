@@ -18,13 +18,24 @@
 //! | Consumer control | `TEXT` with the page label |
 //! | Event refresh | `REFRESH_ID` when the descriptor names a GUID, otherwise omitted |
 //! | Warning, edit and submit rules | `WARNING_IF`, `INCONSISTENT_IF`, `NO_SUBMIT_IF` |
-//! | Disabled condition | `GRAY_OUT_IF`; a foreign `DISABLE_IF` decodes as `disabled` |
-//! | Hidden condition | `SUPPRESS_IF` |
+//! | Disabled condition | `GRAY_OUT_IF` |
+//! | Hidden condition | `SUPPRESS_IF`; a foreign `DISABLE_IF` decodes as `hidden` |
 //! | Read-only condition | A static `EFI_IFR_FLAG_READ_ONLY`, because IFR has no read-only condition |
 //!
 //! The read-only round trip loses the condition: a row with a `read_only`
 //! expression exports as a question with the static flag and decodes as a
 //! locked row, so a rebuilt page cannot restore the expression.
+//!
+//! The reference browser grays a statement only for `ExpressGrayOut` or the
+//! Locked flag (`MdeModulePkg/Universal/SetupBrowserDxe/Presentation.c:326`),
+//! and does not draw one whose result is above it
+//! (`Presentation.c:615`), so a foreign `DISABLE_IF` becomes a hidden row. EDK2
+//! also leaves a `DISABLE_IF` question out of value handling
+//! (`Presentation.c:2086`, `Setup.c:5036`). A hidden row here is removed from
+//! the page and from navigation, and the session does not read its value while
+//! it is hidden, but a condition can still name the value and a submit rule of
+//! the page still runs, so hiding is not the same as dropping the value from
+//! every calculation.
 //!
 //! An opcode that the decoder does not model becomes a
 //! [`forms::Control::Unsupported`] row, so a foreign row stays visible instead

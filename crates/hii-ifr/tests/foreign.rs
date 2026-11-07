@@ -228,3 +228,43 @@ fn unknown_statements_stay_visible_and_unknown_expressions_are_unavailable() {
     assert!(rows[1].hidden.is_none());
     assert!(matches!(rows[2].hidden, Some(Expr::Unavailable(_))));
 }
+
+/// Appends one form around the given statements.
+fn form(statements: &[u8]) -> Vec<u8> {
+    let mut forms = op(0x0E, true, &[0u8; 21]);
+    forms.extend_from_slice(&op(0x01, true, &[1, 0, 0, 0]));
+    forms.extend_from_slice(statements);
+    forms.extend_from_slice(&op(0x29, false, &[]));
+    forms.extend_from_slice(&op(0x29, false, &[]));
+    forms
+}
+
+#[test]
+fn a_disable_if_scope_hides_its_row() {
+    let text = op(0x03, false, &[0, 0, 0, 0, 0, 0]);
+    let mut statements = op(0x1E, true, &[]);
+    statements.extend_from_slice(&op(0x46, false, &[]));
+    statements.extend_from_slice(&text);
+    statements.extend_from_slice(&op(0x29, false, &[]));
+
+    let sets = decode(&list(&form(&statements), &[])).expect("decode");
+    let rows = &sets[0].set.pages[0].rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].hidden, Some(Expr::Bool(true)));
+    assert!(rows[0].disabled.is_none());
+}
+
+#[test]
+fn a_gray_out_if_scope_disables_its_row() {
+    let text = op(0x03, false, &[0, 0, 0, 0, 0, 0]);
+    let mut statements = op(0x19, true, &[]);
+    statements.extend_from_slice(&op(0x46, false, &[]));
+    statements.extend_from_slice(&text);
+    statements.extend_from_slice(&op(0x29, false, &[]));
+
+    let sets = decode(&list(&form(&statements), &[])).expect("decode");
+    let rows = &sets[0].set.pages[0].rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].disabled, Some(Expr::Bool(true)));
+    assert!(rows[0].hidden.is_none());
+}
