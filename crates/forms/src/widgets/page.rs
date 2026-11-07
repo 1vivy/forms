@@ -462,7 +462,12 @@ impl FormsWidget<'_> {
             .style(theme.page());
         let inner = block.inner(panel);
         block.render(panel, buf);
-        for (index, line) in lines.iter().take(usize::from(inner.height)).enumerate() {
+        // A list longer than the panel scrolls so the highlighted line stays in
+        // view; a cursor that wrapped to the last entry is drawn at the bottom.
+        let visible = usize::from(inner.height);
+        let cursor = lines.iter().position(|line| line.1).unwrap_or(0);
+        let first = cursor.saturating_sub(visible.saturating_sub(1));
+        for (index, line) in lines.iter().skip(first).take(visible).enumerate() {
             let style = if line.1 {
                 Style::new()
                     .fg(theme.foreground)
@@ -1024,5 +1029,53 @@ mod slider_tests {
         let low_full = low.iter().filter(|symbol| **symbol == full).count();
         let high_full = high.iter().filter(|symbol| **symbol == full).count();
         assert!(high_full > low_full);
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::FormsWidget;
+    use crate::{Editor, EditorKind, Key, View};
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::widgets::Widget;
+
+    /// The screen text of a page with a choice editor of 40 options, the
+    /// cursor on `selected`, drawn into a panel shorter than the list.
+    fn screen(selected: usize) -> String {
+        let items: Vec<String> = (0..40).map(|index| format!("item{index:02}")).collect();
+        let view = View {
+            path: Vec::new(),
+            title: String::from("Setup"),
+            rows: Vec::new(),
+            selected: None,
+            help: String::new(),
+            editor: Some(Editor {
+                row: Key(1),
+                label: String::from("Target"),
+                kind: EditorKind::Choice { items, selected },
+            }),
+            message: None,
+            modal: None,
+        };
+        let area = Rect::new(0, 0, 40, 16);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&view).render(area, &mut buffer);
+        (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|position| String::from(buffer[position].symbol()))
+            .collect()
+    }
+
+    /// A cursor past the bottom of the panel scrolls the list so it is drawn.
+    #[test]
+    fn a_long_list_scrolls_to_the_cursor() {
+        assert!(screen(0).contains("item00"));
+        let last = screen(39);
+        assert!(last.contains("item39"), "the wrapped cursor is in view");
+        assert!(!last.contains("item00"), "the list scrolled");
     }
 }

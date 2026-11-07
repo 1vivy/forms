@@ -1525,6 +1525,45 @@ mod tests {
         }
     }
 
+    /// Up on the first option moves the cursor to the last, and Down on the
+    /// last moves it to the first, as volume keys walk a list.
+    #[test]
+    fn a_choice_cursor_wraps_both_ways() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Target",
+                Control::Choice(vec![
+                    Choice::new("A", 1),
+                    Choice::new("B", 2),
+                    Choice::new("C", 3),
+                ]),
+            )
+            .set_binding(Key(15));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        provider.set(Key(15), Value::Number(1));
+        let mut session = session_of(&set);
+        assert!(session.enter(Key(1)));
+        session.input(Input::Enter, &mut provider);
+        let cursor = |session: &mut Session<u8>, provider: &mut MemoryProvider| match session
+            .view(provider)
+            .editor
+        {
+            Some(Editor {
+                kind: EditorKind::Choice { selected, .. },
+                ..
+            }) => selected,
+            other => panic!("expected the choice editor, got {other:?}"),
+        };
+        assert_eq!(cursor(&mut session, &mut provider), 0);
+        session.input(Input::Up, &mut provider);
+        assert_eq!(cursor(&mut session, &mut provider), 2);
+        session.input(Input::Down, &mut provider);
+        assert_eq!(cursor(&mut session, &mut provider), 0);
+    }
+
     /// Down moves the choice cursor without a write; Enter writes the option
     /// under the cursor.
     #[test]
