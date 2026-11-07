@@ -64,6 +64,32 @@ impl Margins {
         }
     }
 
+    /// Returns the area that the margins keep, as left, top, width and height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::page::Margins;
+    ///
+    /// assert_eq!(Margins::uniform(0).area((800, 600)), (0, 0, 800, 600));
+    /// assert_eq!(
+    ///     Margins::default().area((800, 600)),
+    ///     (80, 60, 640, 480)
+    /// );
+    /// ```
+    pub fn area(self, display: (u32, u32)) -> (u32, u32, u32, u32) {
+        let left = self.left_of(display.0);
+        let right = self.right_of(display.0);
+        let top = self.top_of(display.1);
+        let bottom = self.bottom_of(display.1);
+        (
+            left,
+            top,
+            display.0.saturating_sub(left).saturating_sub(right),
+            display.1.saturating_sub(top).saturating_sub(bottom),
+        )
+    }
+
     /// Returns the number of pixels that the left edge keeps.
     fn left_of(self, width: u32) -> u32 {
         fraction(width, self.left)
@@ -137,12 +163,7 @@ pub fn placement(
     rows: u32,
     margins: Margins,
 ) -> Placement {
-    let left = margins.left_of(display.0);
-    let right = margins.right_of(display.0);
-    let top = margins.top_of(display.1);
-    let bottom = margins.bottom_of(display.1);
-    let width = display.0.saturating_sub(left).saturating_sub(right);
-    let height = display.1.saturating_sub(top).saturating_sub(bottom);
+    let (left, top, width, height) = margins.area(display);
     let across = width
         .checked_div(columns.saturating_mul(cell.0))
         .unwrap_or(0);
@@ -216,6 +237,20 @@ mod tests {
         let page = placement((240, 160), (6, 10), 40, 16, Margins::uniform(0));
         assert_eq!(page.left, 0);
         assert_eq!(page.top, 0);
+    }
+
+    #[test]
+    fn the_area_of_a_margin_set_is_the_shared_rectangle() {
+        let (left, top, width, height) = Margins::default().area((1272, 2772));
+        assert_eq!((left, top), (127, 277));
+        assert_eq!(left + width, 1272 - 127);
+        assert_eq!(top + height, 2772 - 277);
+        // `placement` draws inside that rectangle.
+        let page = placement((1272, 2772), (6, 10), 40, 16, Margins::default());
+        assert!(page.left >= left);
+        assert!(page.top >= top);
+        assert!(page.left + page.width * page.scale <= left + width);
+        assert!(page.top + page.height * page.scale <= top + height);
     }
 
     #[test]

@@ -256,18 +256,13 @@ where
 /// The page area of a text console, inside the margins of
 /// [`forms::page::Margins::default`].
 fn margins(area: Rect) -> Rect {
-    let margins = forms::page::Margins::default();
-    let across = u32::from(area.width);
-    let down = u32::from(area.height);
-    let left = u16::try_from(across * margins.left / 1_000).unwrap_or(0);
-    let right = u16::try_from(across * margins.right / 1_000).unwrap_or(0);
-    let top = u16::try_from(down * margins.top / 1_000).unwrap_or(0);
-    let bottom = u16::try_from(down * margins.bottom / 1_000).unwrap_or(0);
+    let (left, top, width, height) =
+        forms::page::Margins::default().area((u32::from(area.width), u32::from(area.height)));
     Rect::new(
-        area.x + left,
-        area.y + top,
-        area.width.saturating_sub(left.saturating_add(right)),
-        area.height.saturating_sub(top.saturating_add(bottom)),
+        area.x + u16::try_from(left).unwrap_or(0),
+        area.y + u16::try_from(top).unwrap_or(0),
+        u16::try_from(width).unwrap_or(area.width),
+        u16::try_from(height).unwrap_or(area.height),
     )
 }
 
