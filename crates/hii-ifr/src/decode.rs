@@ -93,6 +93,8 @@ struct Decoding {
     pages: Vec<Key>,
     /// The storage of each question identifier.
     storage: BTreeMap<u16, Storage>,
+    /// The question header flags of each question identifier.
+    flags: BTreeMap<u16, u8>,
 }
 
 impl Decoding {
@@ -156,6 +158,7 @@ pub(crate) fn decode(package_list: &[u8]) -> Result<Vec<Decoded>, DecodeError> {
                 questions: BTreeMap::new(),
                 pages: Vec::new(),
                 storage: BTreeMap::new(),
+                flags: BTreeMap::new(),
             };
             sets.push(build_formset(node, table, &mut decoding)?);
             next = decoding.next;
@@ -370,6 +373,7 @@ fn questions_of(set: &FormSet, decoding: &Decoding) -> Vec<QuestionRef> {
                 storage: decoding.storage.get(id).cloned().unwrap_or(Storage::None),
                 bytes,
                 kind,
+                flags: decoding.flags.get(id).copied().unwrap_or(0),
             });
         }
     }
@@ -820,6 +824,11 @@ fn build_row(
         }
         if let (Some(id), Some(store)) = (question, varstore_of(payload, varstores, strings)) {
             decoding.storage.insert(id, store);
+        }
+        if let Some(id) = question {
+            decoding
+                .flags
+                .insert(id, payload.get(10).copied().unwrap_or(0));
         }
     }
     Ok(row)

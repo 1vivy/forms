@@ -562,10 +562,11 @@ fn question_header(
             push_u16(&mut payload, strings.intern(name)?);
         }
     }
-    let mut flags = match &question.kind {
-        QuestionKind::Action => abi::flags::CALLBACK,
-        _ => 0,
-    };
+    let mut flags = question.flags
+        | match &question.kind {
+            QuestionKind::Action => abi::flags::CALLBACK,
+            _ => 0,
+        };
     if row.locked || row.read_only.is_some() {
         flags |= abi::flags::READ_ONLY;
     }

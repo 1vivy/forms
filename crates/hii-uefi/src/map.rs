@@ -29,8 +29,7 @@ pub enum PopupKind {
 ///
 /// # Errors
 ///
-/// Returns a device error for a value that the specification does not define.
-///
+/// Returns a device error for a value that the specification does not define.///
 /// # Examples
 ///
 /// ```
@@ -132,8 +131,35 @@ pub fn request_value(request: Request) -> u64 {
     }
 }
 
-/// Returns the IFR value type of a question kind.
+/// Returns the request after a change of one question.
 ///
+/// A question header flag wins over the request of the driver, because the
+/// browser must reset or reconnect before the value takes effect. The
+/// reconnect requirement is checked first, as the reference browser does.
+///
+/// # Examples
+///
+/// ```
+/// use forms::Request;
+///
+/// assert_eq!(hii_uefi::request_for(0x40, Request::None), Request::Reconnect);
+/// assert_eq!(hii_uefi::request_for(0x10, Request::None), Request::Restart);
+/// assert_eq!(
+///     hii_uefi::request_for(0, Request::Restart),
+///     Request::Restart
+/// );
+/// ```
+pub fn request_for(flags: u8, driver: Request) -> Request {
+    if flags & hii_abi::flags::RECONNECT_REQUIRED != 0 {
+        Request::Reconnect
+    } else if flags & hii_abi::flags::RESET_REQUIRED != 0 {
+        Request::Restart
+    } else {
+        driver
+    }
+}
+
+/// Returns the IFR value type of a question kind.//
 /// # Examples
 ///
 /// ```
@@ -236,5 +262,41 @@ pub fn selection_of(kind: PopupKind, index: usize) -> HiiPopupSelection {
         (PopupKind::YesNoCancel, 0) => HiiPopupSelection::YES,
         (PopupKind::YesNoCancel, 1) => HiiPopupSelection::NO,
         (PopupKind::YesNoCancel, _) => HiiPopupSelection::CANCEL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_request, request_for, request_value};
+    use forms::{Key, Request, Scope};
+
+    #[test]
+    fn a_question_flag_wins_over_the_driver_request() {
+        assert_eq!(request_for(0x40, Request::None), Request::Reconnect);
+        assert_eq!(request_for(0x40, Request::Restart), Request::Reconnect);
+        assert_eq!(request_for(0x10, Request::None), Request::Restart);
+        assert_eq!(
+            request_for(0x50, Request::None),
+            Request::Reconnect,
+            "the reconnect requirement wins"
+        );
+        assert_eq!(request_for(0, Request::Reconnect), Request::Reconnect);
+        assert_eq!(request_for(0x04, Request::None), Request::None);
+    }
+
+    #[test]
+    fn the_request_values_cover_the_specification() {
+        for value in 0..=9 {
+            let request = map_request(value, Key(2)).expect("the value is defined");
+            assert_eq!(request_value(request), value);
+        }
+        assert!(map_request(10, Key(2)).is_err());
+        assert_eq!(
+            request_value(Request::Apply {
+                scope: Scope::Set,
+                leave: false
+            }),
+            6
+        );
     }
 }

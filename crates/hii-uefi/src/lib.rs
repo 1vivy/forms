@@ -34,7 +34,7 @@ pub mod popup;
 pub mod producer;
 pub mod text;
 
-pub use map::{ifr_type, kind_of, map_request, request_value, selection_of, style_of};
+pub use map::{ifr_type, kind_of, map_request, request_for, request_value, selection_of, style_of};
 
 #[cfg(target_os = "uefi")]
 pub mod hii;

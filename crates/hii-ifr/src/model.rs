@@ -120,6 +120,9 @@ pub struct QuestionRef {
     pub bytes: u16,
     /// The IFR shape.
     pub kind: QuestionKind,
+    /// The question header flags (`EFI_IFR_FLAG_*`), for a consumer that needs
+    /// the reset or reconnect requirement of a question.
+    pub flags: u8,
 }
 
 /// The kind of a variable store.
@@ -330,6 +333,7 @@ pub fn descriptor(set: &FormSet, guid: Guid) -> Export {
                         storage: Storage::None,
                         bytes: 0,
                         kind: QuestionKind::Action,
+                        flags: 0,
                     });
                     next = next.saturating_add(1);
                     continue;
@@ -342,6 +346,7 @@ pub fn descriptor(set: &FormSet, guid: Guid) -> Export {
                 storage: Storage::Offset { store: 1, offset },
                 bytes,
                 kind,
+                flags: 0,
             });
             next = next.saturating_add(1);
             offset = offset.saturating_add(bytes);

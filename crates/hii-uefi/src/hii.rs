@@ -687,7 +687,7 @@ impl Provider for HiiProvider {
         match question.storage {
             Storage::Offset { store, offset } => {
                 self.write_stored(handle, row, store, offset, value)?;
-                Ok(Request::None)
+                Ok(crate::map::request_for(question.flags, Request::None))
             }
             Storage::Name { store, name } => {
                 let entry = self.entry(handle)?;
@@ -702,7 +702,7 @@ impl Provider for HiiProvider {
                 response.push('=');
                 response.push_str(&crate::hex::encode(&bytes));
                 self.route_config(&response)?;
-                Ok(Request::None)
+                Ok(crate::map::request_for(question.flags, Request::None))
             }
             Storage::None => {
                 let access = self.access(handle)?;
@@ -723,7 +723,7 @@ impl Provider for HiiProvider {
                     return Err(Self::status_error(status, "the driver refused the value"));
                 }
                 let request = self.respond(handle, request)?;
-                Ok(request)
+                Ok(crate::map::request_for(question.flags, request))
             }
         }
     }

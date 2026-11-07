@@ -260,6 +260,22 @@ fn an_ordered_list_keeps_its_values_and_limit() {
 }
 
 #[test]
+fn question_flags_round_trip() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder.row("Mode", Control::Toggle).set_binding(Key(10));
+    let set = builder.build();
+    let mut export = descriptor(&set, [0x11; 16]);
+    export.questions[0].flags = hii_abi::flags::RECONNECT_REQUIRED | hii_abi::flags::RESET_REQUIRED;
+    let list = encode(&set, &export, [0x17; 16]).expect("encode");
+    let decoded = decode(&list).expect("decode");
+    assert_eq!(
+        decoded[0].export.questions[0].flags,
+        hii_abi::flags::RECONNECT_REQUIRED | hii_abi::flags::RESET_REQUIRED
+    );
+}
+
+#[test]
 fn a_reset_button_names_the_decoded_default_set() {
     let mut builder = Builder::new(Key(1), "S");
     builder.page("Main");
