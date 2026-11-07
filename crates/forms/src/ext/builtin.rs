@@ -267,24 +267,36 @@ impl Handler for ChoiceOptions {
         })
     }
 
-    fn edit(&self, field: &Field<'_>, _state: &mut EditState, input: Input) -> EditStep {
+    /// Up and Down move the cursor through the options; Enter accepts the
+    /// option under the cursor. A device with only volume keys and power can
+    /// then look at every option before it writes one.
+    fn edit(&self, field: &Field<'_>, state: &mut EditState, input: Input) -> EditStep {
         let options = Self::options(field);
         if options.is_empty() {
             return EditStep::Ignored;
         }
-        let index = Self::index(field);
         let last = options.len() - 1;
-        let next = match input {
-            Input::Down | Input::Right => Some(if index == last { 0 } else { index + 1 }),
-            Input::Up | Input::Left => Some(if index == 0 { last } else { index - 1 }),
-            Input::Home => Some(0),
-            _ => None,
+        let index = state.selected.min(last);
+        state.selected = match input {
+            Input::Down | Input::Right => {
+                if index == last {
+                    0
+                } else {
+                    index + 1
+                }
+            }
+            Input::Up | Input::Left => {
+                if index == 0 {
+                    last
+                } else {
+                    index - 1
+                }
+            }
+            Input::Home => 0,
+            Input::Enter => return EditStep::Accept(Value::Number(options[index].value)),
+            _ => return EditStep::Ignored,
         };
-        if let Some(index) = next {
-            let value = options[index].value;
-            return EditStep::Accept(Value::Number(value));
-        }
-        EditStep::Ignored
+        EditStep::Changed
     }
 }
 

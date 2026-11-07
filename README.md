@@ -106,10 +106,15 @@ An ordered list editor picks a chosen entry up with Enter, moves it with Up and
 Down, and drops it with Enter; Down past the last chosen entry removes it.
 Enter on an available entry adds it, and Enter on the closing `Done` entry
 commits. Left and Right move an entry one place as keyboard shortcuts. A
-slider or number editor changes the value with Up and Down and commits with
-Enter; a keyboard's Back leaves the old value. `Theme::keys` names the keys
-in the hint line; `KeyNames::volume_and_power()` names a phone's keys and
-points at the Back row.
+choice editor moves its cursor with Up and Down and writes the option under
+the cursor on Enter. A slider or number editor changes the value with Up and
+Down and commits with Enter; a keyboard's Back leaves the old value.
+`Session::with_enter_cancels_unchanged(true)` lets Enter on an unchanged value
+close any value editor without a write, which gives a device without a Back
+key a way out; it is off by default. `Theme::keys` names the keys in the hint
+line; `KeyNames::volume_and_power()` names a phone's keys and points at the
+Back row. `Theme::link_mark` marks the rows that open another page, at the
+right edge.
 
 ## Extension
 

@@ -73,6 +73,8 @@ pub struct RowView {
     pub decoration: Decoration,
     /// The row reacts to Enter.
     pub selectable: bool,
+    /// Enter opens another page, so a renderer can mark the row as a link.
+    pub link: bool,
     /// The row accepts no change.
     pub enabled: bool,
     /// A condition or a value could not be read.
@@ -215,6 +217,7 @@ pub struct Session<H> {
     back_row: bool,
     entry_back_row: bool,
     readable_rows: bool,
+    enter_cancels_unchanged: bool,
     modal: Option<Modal>,
     registry: Registry,
     /// The last read time of each value key.
@@ -246,6 +249,7 @@ impl<H: Copy + Eq> Session<H> {
             back_row: true,
             entry_back_row: true,
             readable_rows: false,
+            enter_cancels_unchanged: false,
             modal: None,
             registry: Registry::builtin(),
             reads: BTreeMap::new(),
@@ -293,6 +297,25 @@ impl<H: Copy + Eq> Session<H> {
     #[must_use]
     pub fn with_readable_rows(mut self, readable_rows: bool) -> Self {
         self.readable_rows = readable_rows;
+        self
+    }
+
+    /// Chooses whether Enter on an unchanged value closes an editor without a
+    /// write. The default is `false`.
+    ///
+    /// A device without a Back key has no other way to leave an editor
+    /// unchanged. The option covers value editors (choice, number, slider,
+    /// text, ordered list); an editor whose value the person moved still
+    /// commits on Enter.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let _session = forms::Session::<u32>::new(Vec::new()).with_enter_cancels_unchanged(true);
+    /// ```
+    #[must_use]
+    pub fn with_enter_cancels_unchanged(mut self, enter_cancels_unchanged: bool) -> Self {
+        self.enter_cancels_unchanged = enter_cancels_unchanged;
         self
     }
 
@@ -539,6 +562,7 @@ impl<H: Copy + Eq> Session<H> {
                     help: row.help.clone(),
                     decoration,
                     selectable,
+                    link: matches!(row.control, Control::Link(_)),
                     enabled: !disabled && !locked,
                     uncertain,
                     presentation: row.presentation,
@@ -838,6 +862,14 @@ impl<H: Copy + Eq> Session<H> {
             .registry
             .edit(&row, open.value.as_ref(), &mut state, input);
         match step {
+            // An unchanged value leaves the editor without a write, so a device
+            // with no Back key can still back out of an editor.
+            EditStep::Accept(value)
+                if self.enter_cancels_unchanged && open.value.as_ref() == Some(&value) =>
+            {
+                self.message = None;
+                Event::Changed
+            }
             EditStep::Accept(value) => {
                 self.editor = Some(OpenEditor { state, ..open });
                 self.commit(provider, handle, set, row, value)
@@ -1215,6 +1247,7 @@ impl<H: Copy + Eq> Session<H> {
                 help: set.help.clone(),
                 decoration: Decoration::Plain,
                 selectable: !set.pages.is_empty(),
+                link: !set.pages.is_empty(),
                 enabled: true,
                 uncertain: false,
                 presentation: Presentation::default(),
@@ -1247,6 +1280,7 @@ fn back_row() -> RowView {
         help: String::new(),
         decoration: Decoration::Plain,
         selectable: true,
+        link: false,
         enabled: true,
         uncertain: false,
         presentation: Presentation::default(),
@@ -1449,6 +1483,64 @@ mod tests {
             Event::Response(Request::None)
         );
         assert_eq!(provider.store.read(Key(12)), Ok(Value::List(vec![2, 1])));
+    }
+
+    /// With the option on, Enter on an unchanged value leaves the editor
+    /// without a write; with it off, the same Enter writes the value.
+    #[test]
+    fn enter_on_an_unchanged_value_cancels_only_when_chosen() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Mode",
+                Control::Choice(vec![Choice::new("A", 1), Choice::new("B", 2)]),
+            )
+            .set_binding(Key(14));
+        let set = builder.build();
+        for (cancels, expected) in [
+            (true, Event::Changed),
+            (false, Event::Response(Request::None)),
+        ] {
+            let mut provider = provider_of(&set);
+            provider.set(Key(14), Value::Number(1));
+            let mut session = session_of(&set).with_enter_cancels_unchanged(cancels);
+            assert!(session.enter(Key(1)));
+            session.input(Input::Enter, &mut provider);
+            assert_eq!(
+                session.input(Input::Enter, &mut provider),
+                expected,
+                "cancels={cancels}"
+            );
+            assert!(session.view(&mut provider).editor.is_none());
+        }
+    }
+
+    /// Down moves the choice cursor without a write; Enter writes the option
+    /// under the cursor.
+    #[test]
+    fn a_choice_writes_only_on_enter() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Mode",
+                Control::Choice(vec![Choice::new("A", 1), Choice::new("B", 2)]),
+            )
+            .set_binding(Key(14));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        provider.set(Key(14), Value::Number(1));
+        let mut session = session_of(&set);
+        assert!(session.enter(Key(1)));
+        session.input(Input::Enter, &mut provider);
+        assert_eq!(session.input(Input::Down, &mut provider), Event::Changed);
+        assert_eq!(provider.store.read(Key(14)), Ok(Value::Number(1)));
+        assert_eq!(
+            session.input(Input::Enter, &mut provider),
+            Event::Response(Request::None)
+        );
+        assert_eq!(provider.store.read(Key(14)), Ok(Value::Number(2)));
     }
 
     /// Steps a number with Up and Down within its bounds.

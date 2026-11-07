@@ -89,6 +89,8 @@ pub struct Theme {
     pub bar_full: char,
     /// The character of an empty bar cell.
     pub bar_empty: char,
+    /// The mark at the right edge of a row that opens another page.
+    pub link_mark: &'static str,
     /// The key names of the hint line.
     pub keys: KeyNames,
 }
@@ -185,6 +187,7 @@ impl Default for Theme {
             divider: '─',
             bar_full: '█',
             bar_empty: '░',
+            link_mark: " >",
             keys: KeyNames::default(),
         }
     }

@@ -355,22 +355,38 @@ impl FormsWidget<'_> {
             }
             _ => {}
         }
-        let (label_width, value_width) = columns(row, area.width, theme);
-        let opens = row.selectable;
-        let label_area = Rect::new(area.x, area.y, label_width, area.height);
-        put(buf, label_area, &row.label, style);
-        if opens && label_width >= 2 {
+        // A link row ends with the link mark at the right edge; its value, if
+        // any, sits before the mark. Other rows use the whole value column.
+        let mark = if row.link { theme.link_mark } else { "" };
+        let mark_width = u16::try_from(mark.chars().count())
+            .unwrap_or(0)
+            .min(area.width);
+        let inner = Rect::new(area.x, area.y, area.width - mark_width, area.height);
+        if mark_width > 0 {
             put(
                 buf,
-                Rect::new(area.x + label_width - 2, area.y, 2, 1),
-                " >",
+                Rect::new(inner.right(), area.y, mark_width, 1),
+                mark,
                 style,
             );
         }
+        let (label_width, value_width) = columns(row, inner.width, theme);
+        let label = fit(&row.label, label_width, theme.clip, Truncation::End);
+        put(
+            buf,
+            Rect::new(area.x, area.y, label_width, area.height),
+            &label,
+            style,
+        );
         if value_width == 0 {
             return;
         }
-        let value_area = Rect::new(area.right() - value_width, area.y, value_width, area.height);
+        let value_area = Rect::new(
+            inner.right() - value_width,
+            area.y,
+            value_width,
+            area.height,
+        );
         match &row.decoration {
             Decoration::Toggle(on) => {
                 let mark = if *on {
@@ -595,8 +611,10 @@ fn columns(row: &RowView, width: u16, theme: &Theme) -> (u16, u16) {
     } else {
         u16::try_from(u32::from(width) * u32::from(theme.split) / 100).unwrap_or(width)
     };
+    // A row without a value has no second column, so its label takes the
+    // whole width instead of stopping at the split.
     if row.value.is_empty() && row.decoration == Decoration::Plain {
-        return (label, 0);
+        return (width, 0);
     }
     let label = label.min(width.saturating_sub(2));
     (label, width.saturating_sub(label + 1))
@@ -793,6 +811,7 @@ mod tests {
                 help: String::new(),
                 decoration: Decoration::Toggle(true),
                 selectable: true,
+                link: false,
                 enabled,
                 uncertain: false,
                 presentation: Presentation {
@@ -845,6 +864,53 @@ mod tests {
         let y = row_of(&buffer, "Mode").expect("the row draws");
         let last = area.width - 2;
         assert_eq!(buffer[(last, y)].symbol(), "n");
+    }
+
+    /// Returns the text of the screen line that holds `text`.
+    fn line_of(buffer: &Buffer, text: &str) -> String {
+        let y = row_of(buffer, text).expect("the row draws");
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn only_a_link_row_ends_with_the_link_mark_at_the_right_edge() {
+        let mut page = view(true);
+        let mut link = page.rows[0].clone();
+        link.key = crate::Key(2);
+        link.label = String::from("Boot");
+        link.value = String::new();
+        link.decoration = Decoration::Plain;
+        link.link = true;
+        page.rows.push(link);
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&page).render(area, &mut buffer);
+        let last = usize::from(area.width - 2);
+        let boot: Vec<char> = line_of(&buffer, "Boot").chars().collect();
+        assert_eq!(
+            boot[last], '>',
+            "the link mark sits before the right border"
+        );
+        let mode = line_of(&buffer, "Mode");
+        assert!(!mode.contains('>'), "a toggle is not a link: {mode:?}");
+    }
+
+    #[test]
+    fn a_long_label_ends_with_the_clip_mark() {
+        let mut page = view(true);
+        page.rows[0].label = String::from("A label much longer than its half of the row");
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        let theme = Theme {
+            clip: "…",
+            ..Theme::default()
+        };
+        FormsWidget::new(&page)
+            .with_theme(theme)
+            .render(area, &mut buffer);
+        assert!(line_of(&buffer, "A label").contains('…'));
     }
 
     #[test]
@@ -920,6 +986,7 @@ mod slider_tests {
                     maximum: 3,
                 },
                 selectable: true,
+                link: false,
                 enabled: true,
                 uncertain: false,
                 presentation: Presentation {
