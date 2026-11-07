@@ -346,6 +346,20 @@ impl Handler for Number {
                 state.text.remove(state.cursor);
                 EditStep::Changed
             }
+            // Up and Down step the value, so a device without a keyboard can
+            // set a number; Left and Right move the cursor.
+            Input::Up | Input::Down => {
+                let current = state.text.parse::<u64>().unwrap_or(minimum);
+                let step = step.max(1);
+                let next = if input == Input::Up {
+                    current.saturating_add(step).min(maximum)
+                } else {
+                    current.saturating_sub(step).max(minimum)
+                };
+                state.text = next.to_string();
+                state.cursor = state.text.chars().count();
+                EditStep::Changed
+            }
             Input::Left => {
                 state.cursor = state.cursor.saturating_sub(1);
                 EditStep::Changed
@@ -670,6 +684,7 @@ impl Handler for OrderedList {
                 items,
                 selected: state.selected.min(chosen.len() + available.len()),
                 chosen: chosen.len(),
+                held: state.held && state.selected < chosen.len(),
             },
         })
     }
@@ -682,6 +697,38 @@ impl Handler for OrderedList {
             state.selected = closing;
         }
         let (chosen, available) = Self::split(choices, &state.values);
+        // A device with only volume keys and power works the list with Up,
+        // Down and Enter: Enter picks a chosen entry up, Up and Down move it,
+        // Enter drops it, and Down past the last chosen entry removes it.
+        // Left and Right stay as keyboard shortcuts for one move.
+        if state.held && state.selected < chosen.len() {
+            return match input {
+                Input::Up | Input::Left => {
+                    if state.selected > 0 {
+                        state.values.swap(state.selected, state.selected - 1);
+                        state.selected -= 1;
+                    }
+                    EditStep::Changed
+                }
+                Input::Down | Input::Right => {
+                    if state.selected + 1 < chosen.len() {
+                        state.values.swap(state.selected, state.selected + 1);
+                        state.selected += 1;
+                    } else if input == Input::Down {
+                        state.values.remove(state.selected);
+                        state.held = false;
+                        state.selected = state.values.len();
+                    }
+                    EditStep::Changed
+                }
+                Input::Enter => {
+                    state.held = false;
+                    EditStep::Changed
+                }
+                _ => EditStep::Ignored,
+            };
+        }
+        state.held = false;
         match input {
             Input::Up => {
                 state.selected = if state.selected == 0 {
@@ -716,8 +763,7 @@ impl Handler for OrderedList {
                 EditStep::Changed
             }
             Input::Enter if state.selected < chosen.len() => {
-                state.values.remove(state.selected);
-                state.selected = state.selected.min(state.values.len());
+                state.held = true;
                 EditStep::Changed
             }
             Input::Enter if state.selected < closing => {

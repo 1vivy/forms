@@ -134,6 +134,8 @@ pub struct EditState {
     pub values: Vec<u64>,
     /// The position of a slider.
     pub value: u64,
+    /// An ordered-list entry is picked up: Up and Down move it, Enter drops it.
+    pub held: bool,
     /// A warning was shown and this input confirms it.
     pub confirming: bool,
 }

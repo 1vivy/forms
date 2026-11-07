@@ -11,7 +11,7 @@ use ratatui_widgets::{block::Block, clear::Clear};
 
 use crate::{
     Decoration, Editor, EditorKind, Key, RowView, Truncation, View,
-    widgets::{ModalWidget, Theme},
+    widgets::{KeyNames, ModalWidget, Theme},
 };
 
 /// Draws the value area of a consumer decoration.
@@ -223,7 +223,12 @@ impl Widget for FormsWidget<'_> {
         let mut footer = None;
         if inner.height > 3 {
             let line = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
-            put(buf, line, &hints(self.view), Style::new().fg(theme.hint));
+            put(
+                buf,
+                line,
+                &hints(self.view, theme.keys),
+                Style::new().fg(theme.hint),
+            );
             footer = Some(line);
             list.height = list.height.saturating_sub(1);
         }
@@ -512,18 +517,18 @@ fn editor_lines(editor: &Editor) -> Vec<(String, bool)> {
             items,
             selected,
             chosen,
+            held,
         } => items
             .iter()
             .enumerate()
             .map(|(index, item)| {
                 let marker = if index < *chosen { '*' } else { ' ' };
-                (
-                    format!(
-                        "{} {marker} {item}",
-                        if index == *selected { '>' } else { ' ' }
-                    ),
-                    index == *selected,
-                )
+                let cursor = match (index == *selected, *held) {
+                    (true, true) => '=',
+                    (true, false) => '>',
+                    _ => ' ',
+                };
+                (format!("{cursor} {marker} {item}"), index == *selected)
             })
             .collect(),
     }
@@ -544,20 +549,37 @@ fn with_cursor(text: &str, cursor: usize) -> String {
     out
 }
 
-/// Returns the key hints of the current page.
-fn hints(view: &View) -> String {
+/// Returns the key hints of the current page in the theme's key names.
+///
+/// Without a Back key the page hint points at the Back row, and an editor
+/// names only what its own keys do.
+fn hints(view: &View, keys: KeyNames) -> String {
+    let KeyNames {
+        move_keys,
+        select,
+        back,
+    } = keys;
+    let cancel = back.map_or_else(String::new, |back| format!("   {back} cancel"));
     if view.modal.is_some() {
-        return String::from("Left Right move   Enter accept   Esc cancel");
+        return format!("{move_keys} move   {select} choose{cancel}");
     }
     match &view.editor {
         Some(editor) => match editor.kind {
-            EditorKind::List { .. } => {
-                String::from("Up Down move   Enter add or remove   Left Right reorder   Esc cancel")
+            EditorKind::List { held: true, .. } => {
+                format!("{move_keys} move entry   {select} drop")
             }
-            EditorKind::Slider { .. } => String::from("Up Down adjust   Enter accept   Esc cancel"),
-            _ => String::from("Type to edit   Enter accept   Esc cancel"),
+            EditorKind::List { .. } => {
+                format!("{move_keys} move   {select} pick up, add or done{cancel}")
+            }
+            EditorKind::Slider { .. } | EditorKind::Number { .. } => {
+                format!("{move_keys} adjust   {select} accept{cancel}")
+            }
+            _ => format!("Type to edit   {select} accept{cancel}"),
         },
-        None => String::from("Up Down move   Enter open   Esc back"),
+        None => match back {
+            Some(back) => format!("{move_keys} move   {select} open   {back} back"),
+            None => format!("{move_keys} move   {select} open   < Back row: back"),
+        },
     }
 }
 

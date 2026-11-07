@@ -99,10 +99,17 @@ unchanged and returns `Failed`. A `Warning` rule returns `Warning` once and
 accepts the confirmed input. A `Submit` rule blocks leaving the page. A
 `Reset` row writes the named default set and commits it.
 
-An ordered list editor moves entries with Left and Right, adds or removes them
-with Enter and commits on its closing `Done` entry. A slider editor changes
-the value with Up and Down, commits with Enter and leaves the old value with
-Back.
+Every page and editor works with three keys: Up, Down and Enter, as on a
+phone with volume keys and power. Up and Down reach every selectable row and
+the closing Back row, so a device without a Back key can always leave a page.
+An ordered list editor picks a chosen entry up with Enter, moves it with Up and
+Down, and drops it with Enter; Down past the last chosen entry removes it.
+Enter on an available entry adds it, and Enter on the closing `Done` entry
+commits. Left and Right move an entry one place as keyboard shortcuts. A
+slider or number editor changes the value with Up and Down and commits with
+Enter; a keyboard's Back leaves the old value. `Theme::keys` names the keys
+in the hint line; `KeyNames::volume_and_power()` names a phone's keys and
+points at the Back row.
 
 ## Extension
 

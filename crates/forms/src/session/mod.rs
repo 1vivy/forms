@@ -126,6 +126,8 @@ pub enum EditorKind {
         selected: usize,
         /// The number of chosen entries at the start of `items`.
         chosen: usize,
+        /// The selected chosen entry is picked up and moves with Up and Down.
+        held: bool,
     },
 }
 
@@ -641,15 +643,20 @@ impl<H: Copy + Eq> Session<H> {
         let Some(page) = set.page(page_key) else {
             return Event::None;
         };
-        let mut visible: Vec<&Row> = Vec::new();
+        let mut visible: Vec<Key> = Vec::new();
         for row in &page.rows {
             if !(row.control.is_interactive() || self.readable_rows) {
                 continue;
             }
             match self.condition(provider, handle, &set, row.hidden.as_ref()) {
                 Ok(true) | Err(_) => continue,
-                Ok(false) => visible.push(row),
+                Ok(false) => visible.push(row.key),
             }
+        }
+        // The view ends every page with the Back row, so Up and Down reach it:
+        // a device with only volume keys and power has no other way back.
+        if self.back_row {
+            visible.push(back_row().key);
         }
         if visible.is_empty() {
             return Event::None;
@@ -658,10 +665,7 @@ impl<H: Copy + Eq> Session<H> {
             .pages
             .last()
             .map_or(Key::default(), |page| page.selected);
-        let index = visible
-            .iter()
-            .position(|row| row.key == selected)
-            .unwrap_or(0);
+        let index = visible.iter().position(|key| *key == selected).unwrap_or(0);
         let last = visible.len() - 1;
         let next = match input {
             Input::Up => {
@@ -682,7 +686,7 @@ impl<H: Copy + Eq> Session<H> {
             _ => last,
         };
         if let Some(page) = self.pages.last_mut() {
-            page.selected = visible[next].key;
+            page.selected = visible[next];
         }
         self.message = None;
         Event::Changed
@@ -1251,13 +1255,14 @@ fn back_row() -> RowView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Event, Input, Session};
+    use super::{BACK, Editor, EditorKind, Event, Input, Session};
     use crate::model::{
         Builder, Choice, Control, Expr, FormSet, Key, MemoryProvider, Request, Store, Validation,
         Value,
     };
     use alloc::string::String;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     /// Builds a provider over one set.
     fn provider_of(set: &FormSet) -> MemoryProvider {
@@ -1392,6 +1397,116 @@ mod tests {
             Event::Response(Request::None)
         );
         assert_eq!(provider.store.read(Key(12)), Ok(Value::List(vec![2, 1])));
+    }
+
+    /// Reorders and removes ordered-list entries with Up, Down and Enter only,
+    /// as a device with volume keys and power does.
+    #[test]
+    fn ordered_list_reorders_with_three_keys() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Order",
+                Control::OrderedList {
+                    choices: vec![
+                        Choice::new("A", 1),
+                        Choice::new("B", 2),
+                        Choice::new("C", 3),
+                    ],
+                    maximum: 3,
+                },
+            )
+            .set_binding(Key(12));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        provider.set(Key(12), Value::List(vec![1, 2, 3]));
+        let mut session = session_of(&set);
+        assert!(session.enter(Key(1)));
+        // Open the editor, pick up A, move it down one, drop it: B A C.
+        for input in [Input::Enter, Input::Enter, Input::Down, Input::Enter] {
+            assert_eq!(session.input(input, &mut provider), Event::Changed);
+        }
+        // Pick up C and move it past the last chosen entry: removed.
+        for input in [Input::Down, Input::Enter, Input::Down] {
+            assert_eq!(session.input(input, &mut provider), Event::Changed);
+        }
+        // Walk to Done and accept.
+        let Some(Editor {
+            kind: EditorKind::List {
+                items, selected, ..
+            },
+            ..
+        }) = session.view(&mut provider).editor
+        else {
+            panic!("expected the list editor");
+        };
+        for _ in selected..items.len() - 1 {
+            session.input(Input::Down, &mut provider);
+        }
+        assert_eq!(
+            session.input(Input::Enter, &mut provider),
+            Event::Response(Request::None)
+        );
+        assert_eq!(provider.store.read(Key(12)), Ok(Value::List(vec![2, 1])));
+    }
+
+    /// Steps a number with Up and Down within its bounds.
+    #[test]
+    fn number_steps_with_up_and_down() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Count",
+                Control::Number {
+                    minimum: 0,
+                    maximum: 10,
+                    step: 5,
+                },
+            )
+            .set_binding(Key(13));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        provider.set(Key(13), Value::Number(5));
+        let mut session = session_of(&set);
+        assert!(session.enter(Key(1)));
+        for input in [Input::Enter, Input::Up, Input::Up] {
+            session.input(input, &mut provider);
+        }
+        assert_eq!(
+            session.input(Input::Enter, &mut provider),
+            Event::Response(Request::None)
+        );
+        assert_eq!(provider.store.read(Key(13)), Ok(Value::Number(10)));
+    }
+
+    /// Down from the last row reaches the Back row, so a device without a Back
+    /// key can always leave the page.
+    #[test]
+    fn down_reaches_the_back_row() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder.row("A", Control::Toggle).set_binding(Key(30));
+        builder.row("B", Control::Toggle).set_binding(Key(31));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        let mut session = Session::new(vec![(0u8, set.clone())]);
+        assert!(session.enter(Key(1)));
+        let mut labels = Vec::new();
+        for _ in 0..3 {
+            session.input(Input::Down, &mut provider);
+            let view = session.view(&mut provider);
+            labels.push(view.selected.map(|index| view.rows[index].label.clone()));
+        }
+        assert_eq!(
+            labels,
+            [
+                Some(String::from("B")),
+                Some(String::from(BACK)),
+                Some(String::from("A"))
+            ]
+        );
     }
 
     /// Writes every value of the named default set.

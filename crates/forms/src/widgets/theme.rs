@@ -89,6 +89,60 @@ pub struct Theme {
     pub bar_full: char,
     /// The character of an empty bar cell.
     pub bar_empty: char,
+    /// The key names of the hint line.
+    pub keys: KeyNames,
+}
+
+/// The key names that the hint line shows.
+///
+/// A device without a keyboard names its own keys and states that it has no
+/// Back key, so the hint line points at the Back row instead.
+///
+/// # Examples
+///
+/// ```
+/// use forms::widgets::KeyNames;
+///
+/// let phone = KeyNames::volume_and_power();
+/// assert_eq!(phone.back, None);
+/// assert_eq!(KeyNames::default().back, Some("Esc"));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyNames {
+    /// The keys that move the selection.
+    pub move_keys: &'static str,
+    /// The key that selects or accepts.
+    pub select: &'static str,
+    /// The key that cancels or goes back, if the device has one.
+    pub back: Option<&'static str>,
+}
+
+impl Default for KeyNames {
+    fn default() -> Self {
+        Self {
+            move_keys: "Up Down",
+            select: "Enter",
+            back: Some("Esc"),
+        }
+    }
+}
+
+impl KeyNames {
+    /// Returns the names of a device with only volume keys and a power key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(forms::widgets::KeyNames::volume_and_power().select, "Power");
+    /// ```
+    #[must_use]
+    pub const fn volume_and_power() -> Self {
+        Self {
+            move_keys: "Vol",
+            select: "Power",
+            back: None,
+        }
+    }
 }
 
 impl Default for Theme {
@@ -131,6 +185,7 @@ impl Default for Theme {
             divider: '─',
             bar_full: '█',
             bar_empty: '░',
+            keys: KeyNames::default(),
         }
     }
 }
