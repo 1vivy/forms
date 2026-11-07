@@ -275,6 +275,7 @@ dependencies = [
  "crossterm",
  "forms",
  "ratatui",
+ "ratatui-core",
 ]
 
 [[package]]

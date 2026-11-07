@@ -16,7 +16,7 @@
 use core::cell::RefCell;
 
 use forms::{Input, Session};
-use forms_examples::{SET_GUID, SettingsProvider, formset};
+use forms_examples::{SettingsProvider, formset};
 
 use crate::{Config, Screen};
 
@@ -36,8 +36,9 @@ struct Demo {
 impl Demo {
     /// Returns a page on the entry form of the example formset.
     fn new() -> Self {
-        let mut session = Session::new(vec![(forms_examples::HANDLE, formset())]);
-        let _ = session.enter(&SET_GUID);
+        let set = formset();
+        let mut session = Session::new(vec![(forms_examples::HANDLE, set.clone())]);
+        let _ = session.enter(set.key);
         let mut page = Self {
             session,
             provider: SettingsProvider::new(),
@@ -150,7 +151,7 @@ pub extern "C" fn text_len() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{describe, input, open, press};
-    use forms::{ActionRequest, Event, Input};
+    use forms::{Event, Input, ModalOutcome, Request};
 
     #[test]
     fn a_key_stroke_reaches_the_session() {
@@ -163,13 +164,13 @@ mod tests {
     #[test]
     fn an_event_states_its_request() {
         assert_eq!(
-            describe(&Event::Response(ActionRequest::Exit)),
-            "request: Exit"
+            describe(&Event::Response(Request::Restart)),
+            "request: Restart"
         );
         assert_eq!(describe(&Event::None), "");
         assert_eq!(
-            describe(&Event::Popup(forms::PopupSelection::Yes)),
-            "popup: Yes"
+            describe(&Event::Modal(ModalOutcome::Closed)),
+            "modal: Closed"
         );
     }
 

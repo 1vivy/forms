@@ -363,10 +363,13 @@ impl PreparedFormSet {
         Ok(request)
     }
 
-    /// Returns the row of a question.
+    /// Returns the row of a question, by its row key or its binding.
     fn row(&self, key: Key) -> Result<&Row, ConfigError> {
         self.set
-            .row(key)
+            .pages
+            .iter()
+            .flat_map(|page| &page.rows)
+            .find(|row| row.key == key || row.binding == Some(key))
             .ok_or_else(|| ConfigError::new(Status::NOT_FOUND, 0))
     }
 

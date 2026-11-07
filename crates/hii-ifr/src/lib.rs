@@ -150,7 +150,7 @@ pub fn decode(package_list: &[u8]) -> Result<Vec<Decoded>, DecodeError> {
 ///
 /// let row = Row::new(Key(1), "Count", Control::Number {
 ///     minimum: 0,
-///     maximum: 10,
+///     maximum: u64::from(u16::MAX),
 ///     step: 1,
 /// });
 /// let bytes = hii_ifr::value_bytes(&row, &Value::Number(0x1234)).unwrap();

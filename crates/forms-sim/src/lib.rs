@@ -33,7 +33,7 @@
 //!     help: String::new(),
 //!     editor: None,
 //!     message: None,
-//!     popup: None,
+//!     modal: None,
 //! };
 //! let mut screen = Screen::new(config);
 //! screen.draw(true, &view).expect("the view draws");
@@ -61,47 +61,32 @@ mod sim;
 #[cfg(feature = "demo")]
 pub mod demo;
 
-pub use sim::{Defaults, SHARED, Sim, describe, guid, input, title};
+pub use sim::{Defaults, SHARED, Sim, describe, input, key, title};
 
-/// Returns a two-row formset for examples and tests.
+/// Returns a sample set for examples and tests.
 ///
 /// # Examples
 ///
 /// ```
 /// let set = forms_sim::sample();
-/// assert_eq!(set.forms.len(), 1);
+/// assert_eq!(set.pages.len(), 1);
+/// assert_eq!(set.pages[0].rows.len(), 3);
 /// ```
 #[must_use]
 pub fn sample() -> forms::FormSet {
-    use forms::{Form, FormId, FormSet, Statement};
-    FormSet {
-        guid: [0x33; 16],
-        title: String::from("Sample"),
-        help: String::from("A sample page"),
-        class_guids: Vec::new(),
-        varstores: Vec::new(),
-        forms: vec![Form {
-            id: FormId(1),
-            title: String::from("Sample"),
-            items: vec![
-                Statement::Subtitle {
-                    text: String::from("Rows"),
-                }
-                .into(),
-                Statement::Checkbox {
-                    question: forms::Question {
-                        id: forms::QuestionId(1),
-                        prompt: String::from("Row"),
-                        help: String::from("A row"),
-                        storage: forms::Storage::None,
-                        flags: forms::QuestionFlags(forms::QuestionFlags::CALLBACK.0),
-                    },
-                    default: false,
-                }
-                .into(),
-            ],
-        }],
-    }
+    use forms::{Builder, Choice, Control, Key};
+
+    let mut builder = Builder::new(Key(0x33), "Sample").help("A sample page");
+    builder.page("Sample");
+    builder.row("Rows", Control::Heading);
+    builder.row("Row", Control::Toggle).set_binding(Key(1));
+    builder
+        .row(
+            "Mode",
+            Control::Choice(vec![Choice::new("Fast", 1), Choice::new("Safe", 2)]),
+        )
+        .set_binding(Key(2));
+    builder.build()
 }
 
 /// One panel and the page placement on it.
@@ -367,7 +352,7 @@ mod tests {
             help: String::new(),
             editor: None,
             message: None,
-            popup: None,
+            modal: None,
         }
     }
 

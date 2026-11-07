@@ -1,16 +1,16 @@
 //! One page that a front end drives one key stroke at a time.
 //!
 //! [`Sim`] joins a [`Session`], a provider and a [`Screen`], so a consumer that
-//! has no firmware display writes a few lines. [`Defaults`] answers every
-//! question from the statements of a formset, for a page whose values are not
-//! stored anywhere.
+//! has no firmware display writes a few lines. [`Defaults`] answers every row
+//! from the description of a set, for a page whose values are not stored
+//! anywhere.
 //!
-//! A page that opens confirmation popups keeps its own policy: it drives the
-//! [`Session`] and the [`Provider`] directly and draws the view that
-//! `Session::view` returns, as the ODP setup front end does.
+//! A page that opens modals keeps its own policy: it drives the [`Session`]
+//! and the [`Provider`] directly and draws the view that `Session::view`
+//! returns, as the ODP setup front end does.
 
-use forms::{Event, FormSet, Guid, Input, Provider, Question, Session, Statement, Value, View};
-use std::string::ToString;
+use forms::{Control, Event, FormSet, Input, Key, Provider, Request, Row, Session, Value, View};
+use std::string::{String, ToString};
 use std::vec::Vec;
 
 use crate::{Config, Screen};
@@ -28,10 +28,7 @@ pub struct Sim<H: Copy + Eq, P: Provider<Handle = H>> {
 }
 
 impl<H: Copy + Eq, P: Provider<Handle = H>> Sim<H, P> {
-    /// Opens the entry form of `entry` over `provider`.
-    ///
-    /// The session shows the first form of that formset. A formset that the
-    /// list does not hold leaves the session on its list page.
+    /// Opens the entry page of `set` over `provider`.
     ///
     /// # Examples
     ///
@@ -45,7 +42,7 @@ impl<H: Copy + Eq, P: Provider<Handle = H>> Sim<H, P> {
     /// ```
     pub fn new(set: &FormSet, provider: P, handle: H, config: Config) -> Self {
         let mut session = Session::new(vec![(handle, set.clone())]);
-        let _ = session.enter(&set.guid);
+        let _ = session.enter(set.key);
         Self {
             session,
             provider,
@@ -62,13 +59,8 @@ impl<H: Copy + Eq, P: Provider<Handle = H>> Sim<H, P> {
     /// Applies one key stroke, records what it changed and draws the page.
     ///
     /// The method returns the event, so a caller can act on an
-    /// [`Event::Response`](forms::Event::Response) or a
-    /// [`Event::Popup`](forms::Event::Popup) itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns the drawing failure of the screen. The event still applies, and
-    /// the notice states the failure.
+    /// [`Event::Response`](forms::Event::Response) or an
+    /// [`Event::Modal`](forms::Event::Modal) itself.
     pub fn press(&mut self, input: Input) -> Event {
         let event = self.session.input(input, &mut self.provider);
         self.notice = describe(&event);
@@ -109,12 +101,12 @@ impl<H: Copy + Eq, P: Provider<Handle = H>> Sim<H, P> {
     }
 }
 
-/// A provider that answers every question from the statements of a formset.
+/// A provider that answers every row from the description of a set.
 ///
-/// A checkbox states its default and a one-of states its default choice. Every
-/// other question answers `0`, and a write stores the value that the page
-/// commits. This provider suits a page that shows a formset and no stored
-/// settings.
+/// A toggle answers its default or `false`, a choice answers its default or
+/// its first option, a number answers its lower bound, and a text answers an
+/// empty text. A write stores the value that the page commits. This provider
+/// suits a page that shows a set and no stored settings.
 ///
 /// # Examples
 ///
@@ -127,51 +119,74 @@ impl<H: Copy + Eq, P: Provider<Handle = H>> Sim<H, P> {
 /// assert_eq!(provider.formsets().expect("the list reads").len(), 1);
 /// ```
 pub struct Defaults {
-    /// The formset that the provider answers for.
+    /// The set that the provider answers for.
     set: FormSet,
-    /// The stored value of each question.
-    values: Vec<(u16, Value)>,
+    /// The stored value of each value key.
+    values: Vec<(Key, Value)>,
 }
 
 impl Defaults {
     /// Returns a provider over the defaults of `set`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms_sim::Defaults;
+    ///
+    /// let set = forms_sim::sample();
+    /// let provider = Defaults::new(&set);
+    /// assert_eq!(provider.values(), 2);
+    /// ```
     #[must_use]
     pub fn new(set: &FormSet) -> Self {
         let mut provider = Self {
             set: set.clone(),
             values: Vec::new(),
         };
-        for form in &set.forms {
-            for item in &form.items {
-                match &item.statement {
-                    Statement::Checkbox { question, default } => {
-                        provider.values.push((question.id.0, Value::Bool(*default)));
+        for page in &set.pages {
+            for row in &page.rows {
+                let Some(binding) = row.binding else {
+                    continue;
+                };
+                let default = set
+                    .defaults
+                    .iter()
+                    .find_map(|defaults| defaults.values.get(&binding).cloned());
+                let value = default.unwrap_or_else(|| match &row.control {
+                    Control::Toggle => Value::Bool(false),
+                    Control::Choice(choices) => {
+                        Value::Number(choices.first().map_or(0, |choice| choice.value))
                     }
-                    Statement::OneOf {
-                        question, choices, ..
-                    } => {
-                        let chosen = choices
-                            .iter()
-                            .find(|choice| choice.default)
-                            .or(choices.first());
-                        if let Some(choice) = chosen {
-                            provider
-                                .values
-                                .push((question.id.0, Value::Number(choice.value)));
-                        }
+                    Control::Number { minimum, .. } | Control::Slider { minimum, .. } => {
+                        Value::Number(*minimum)
                     }
-                    _ => {}
-                }
+                    Control::TextInput { .. } => Value::Text(String::new()),
+                    Control::OrderedList { .. } => Value::List(Vec::new()),
+                    _ => Value::Bytes(Vec::new()),
+                });
+                provider.values.push((binding, value));
             }
         }
         provider
     }
 
-    /// Returns the stored value of one question.
-    fn get(&self, question: u16) -> Value {
+    /// Returns the number of values that the provider holds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(forms_sim::Defaults::new(&forms_sim::sample()).values(), 2);
+    /// ```
+    #[must_use]
+    pub fn values(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Returns the stored value of one value key.
+    fn get(&self, key: Key) -> Value {
         self.values
             .iter()
-            .find(|(id, _)| *id == question)
+            .find(|(id, _)| *id == key)
             .map_or(Value::Number(0), |(_, value)| value.clone())
     }
 }
@@ -183,40 +198,36 @@ impl Provider for Defaults {
         Ok(vec![(SHARED, self.set.clone())])
     }
 
-    fn read(
-        &mut self,
-        _handle: u8,
-        _set: &FormSet,
-        question: &Question,
-    ) -> Result<Value, forms::Error> {
-        Ok(self.get(question.id.0))
+    fn read(&mut self, _handle: u8, _set: &FormSet, row: &Row) -> Result<Value, forms::Error> {
+        let key = row
+            .binding
+            .ok_or_else(|| forms::Error::new("The row has no value"))?;
+        Ok(self.get(key))
     }
 
     fn write(
         &mut self,
         _handle: u8,
         _set: &FormSet,
-        question: &Question,
+        row: &Row,
         value: &Value,
-    ) -> Result<forms::ActionRequest, forms::Error> {
-        match self.values.iter_mut().find(|(id, _)| *id == question.id.0) {
+    ) -> Result<Request, forms::Error> {
+        let key = row
+            .binding
+            .ok_or_else(|| forms::Error::new("The row has no value"))?;
+        match self.values.iter_mut().find(|(id, _)| *id == key) {
             Some((_, current)) => *current = value.clone(),
-            None => self.values.push((question.id.0, value.clone())),
+            None => self.values.push((key, value.clone())),
         }
-        Ok(forms::ActionRequest::None)
+        Ok(Request::None)
     }
 
-    fn action(
-        &mut self,
-        _handle: u8,
-        _set: &FormSet,
-        _question: &Question,
-    ) -> Result<forms::ActionRequest, forms::Error> {
-        Ok(forms::ActionRequest::None)
+    fn action(&mut self, _handle: u8, _set: &FormSet, _row: &Row) -> Result<Request, forms::Error> {
+        Ok(Request::None)
     }
 }
 
-/// The handle that [`Defaults`] uses for its one formset.
+/// The handle that [`Defaults`] uses for its one set.
 pub const SHARED: u8 = 1;
 
 /// Returns a short line that states what one event changed.
@@ -236,8 +247,9 @@ pub fn describe(event: &Event) -> String {
         Event::None => String::new(),
         Event::Changed => String::from("changed"),
         Event::Exit => String::from("exit"),
+        Event::Warning(message) => format!("warning: {message}"),
         Event::Response(request) => format!("request: {request:?}"),
-        Event::Popup(selection) => format!("popup: {selection:?}"),
+        Event::Modal(outcome) => format!("modal: {outcome:?}"),
         Event::Failed(error) => format!("failed: {}", error.reason),
     }
 }
@@ -274,7 +286,7 @@ pub fn input(code: u32, character: u32) -> Option<Input> {
     })
 }
 
-/// Returns the title of a formset, for a page that states it.
+/// Returns the title of a set, for a page that states it.
 ///
 /// # Examples
 ///
@@ -287,22 +299,22 @@ pub fn title(set: &FormSet) -> String {
     set.title.to_string()
 }
 
-/// Returns the identifier of a formset.
+/// Returns the key of a set.
 ///
 /// # Examples
 ///
 /// ```
 /// let set = forms_sim::sample();
-/// assert_eq!(forms_sim::guid(&set), [0x33; 16]);
+/// assert_eq!(forms_sim::key(&set), forms::Key(0x33));
 /// ```
 #[must_use]
-pub fn guid(set: &FormSet) -> Guid {
-    set.guid
+pub fn key(set: &FormSet) -> Key {
+    set.key
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Defaults, SHARED, Sim, describe, input};
+    use super::{Defaults, SHARED, Sim, describe, input, key};
     use crate::Config;
     use forms::{Event, Input, Provider, Value};
 
@@ -322,31 +334,21 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_provider_answers_from_the_formset() {
+    fn the_defaults_provider_answers_from_the_set() {
         let set = crate::sample();
         let mut provider = Defaults::new(&set);
         assert_eq!(provider.formsets().expect("the list reads").len(), 1);
-        let question = forms::Question {
-            id: forms::QuestionId(1),
-            prompt: String::from("Row"),
-            help: String::new(),
-            storage: forms::Storage::None,
-            flags: forms::QuestionFlags(forms::QuestionFlags::CALLBACK.0),
-        };
+        let row = set.pages[0].rows[1].clone();
         assert_eq!(
-            provider
-                .read(SHARED, &set, &question)
-                .expect("the value reads"),
+            provider.read(SHARED, &set, &row).expect("the value reads"),
             Value::Bool(false)
         );
         let written = provider
-            .write(SHARED, &set, &question, &Value::Bool(true))
+            .write(SHARED, &set, &row, &Value::Bool(true))
             .expect("the value writes");
-        assert_eq!(written, forms::ActionRequest::None);
+        assert_eq!(written, forms::Request::None);
         assert_eq!(
-            provider
-                .read(SHARED, &set, &question)
-                .expect("the value reads"),
+            provider.read(SHARED, &set, &row).expect("the value reads"),
             Value::Bool(true)
         );
     }
@@ -356,5 +358,6 @@ mod tests {
         assert_eq!(describe(&Event::None), "");
         assert_eq!(input(5, 0), Some(Input::Enter));
         assert_eq!(input(42, 0), None);
+        assert_eq!(key(&crate::sample()), forms::Key(0x33));
     }
 }

@@ -20,7 +20,7 @@
 //!
 //! ```
 //! let set = forms_examples::formset();
-//! assert_eq!(set.pages[0].rows.len(), 8);
+//! assert_eq!(set.pages[0].rows.len(), 10);
 //! ```
 #![no_std]
 
@@ -211,7 +211,7 @@ pub fn setting_of(key: Key) -> Option<Setting> {
 /// ```
 /// let set = forms_examples::formset();
 /// assert_eq!(set.title, "Platform");
-/// assert_eq!(set.pages[0].rows.len(), 8);
+/// assert_eq!(set.pages[0].rows.len(), 10);
 /// ```
 pub fn formset() -> FormSet {
     let mut builder = Builder::new(Key(1), "Platform").help("Recovery settings");
@@ -311,7 +311,7 @@ pub fn value_of(settings: &Settings, setting: Setting) -> Value {
 /// use forms::{Key, Value};
 ///
 /// let mut settings = forms_examples::Settings::default();
-/// forms_examples::write_setting(&mut settings, forms_examples::Key(11), &Value::Number(1)).unwrap();
+/// forms_examples::write_setting(&mut settings, forms::Key(11), &Value::Number(1)).unwrap();
 /// assert_eq!(settings.mode, 1);
 /// ```
 pub fn write_setting(settings: &mut Settings, key: Key, value: &Value) -> Result<(), Error> {
@@ -397,7 +397,7 @@ fn out_of_range(label: &str, minimum: u64, maximum: u64) -> Error {
 ///
 /// let mut provider = forms_examples::SettingsProvider::new();
 /// let set = forms_examples::formset();
-/// let row = &set.pages[0].rows[4];
+/// let row = &set.pages[0].rows[5];
 /// assert_eq!(
 ///     provider.read(forms_examples::HANDLE, &set, row),
 ///     Ok(Value::Number(5))

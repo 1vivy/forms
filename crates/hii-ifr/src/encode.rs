@@ -266,7 +266,7 @@ fn encode_row(
     }
     if let Some(condition) = &row.disabled {
         let expr = encode_expr(condition, export)?;
-        body = wrap_scoped(abi::op::DISABLE_IF, &[], &expr, &body)?;
+        body = wrap_scoped(abi::op::GRAY_OUT_IF, &[], &expr, &body)?;
     }
     if let Some(condition) = &row.hidden {
         let expr = encode_expr(condition, export)?;

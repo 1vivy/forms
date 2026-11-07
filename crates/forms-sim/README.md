@@ -58,7 +58,7 @@ let _ = sim.draw();
 | `input` | A `forms::Input` for a browser key code |
 | `sample` | A two-row formset for examples and tests |
 
-A page that opens confirmation popups keeps its own policy. It drives
+A page that opens modals keeps its own policy. It drives
 `forms::Session` and its provider directly and draws the view that
 `Session::view` returns on a `Screen`, as the ODP setup front end does.
 
