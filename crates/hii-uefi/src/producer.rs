@@ -122,6 +122,32 @@ impl PreparedFormSet {
     /// ```
     pub fn new(set: FormSet, guid: [u8; 16]) -> Result<Self, ConfigError> {
         let export = descriptor(&set, guid);
+        Self::with_export(set, export)
+    }
+
+    /// Uses a descriptor that the caller built, so question flags such as
+    /// `RESET_REQUIRED` and the caller's varstores reach the published IFR.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Status::INVALID_PARAMETER`] when a value row has no size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{Builder, Control, Key};
+    /// use hii_uefi::producer::PreparedFormSet;
+    ///
+    /// let mut builder = Builder::new(Key(1), "P");
+    /// builder.page("Main");
+    /// builder.row("Mode", Control::Toggle).set_binding(Key(10));
+    /// let set = builder.build();
+    /// let mut export = hii_ifr::descriptor(&set, [0x42; 16]);
+    /// export.questions[0].flags = 0x10;
+    /// let prepared = PreparedFormSet::with_export(set, export).unwrap();
+    /// assert_eq!(prepared.export().questions[0].flags, 0x10);
+    /// ```
+    pub fn with_export(set: FormSet, export: Export) -> Result<Self, ConfigError> {
         for question in &export.questions {
             if matches!(question.kind, QuestionKind::Action) {
                 continue;

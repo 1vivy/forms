@@ -91,14 +91,54 @@ impl<P: Provider + 'static> Registration<P> {
         provider: P,
         provider_handle: P::Handle,
     ) -> Result<Self, Status> {
+        let prepared = PreparedFormSet::new(set, guid).map_err(|_| Status::INVALID_PARAMETER)?;
+        // SAFETY: the caller upholds the contract of this function.
+        unsafe { Self::prepared(boot, prepared, provider, provider_handle) }
+    }
+
+    /// Publishes one form set with a descriptor that the caller built, so its
+    /// question flags (such as `RESET_REQUIRED`) and varstores reach the IFR.
+    ///
+    /// The descriptor's GUID identifies the form set in the HII database.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::new`].
+    pub unsafe fn with_export(
+        boot: Boot,
+        set: FormSet,
+        export: hii_ifr::Export,
+        provider: P,
+        provider_handle: P::Handle,
+    ) -> Result<Self, Status> {
+        let prepared =
+            PreparedFormSet::with_export(set, export).map_err(|_| Status::INVALID_PARAMETER)?;
+        // SAFETY: the caller upholds the contract of this function.
+        unsafe { Self::prepared(boot, prepared, provider, provider_handle) }
+    }
+
+    /// Publishes one prepared form set.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::new`].
+    unsafe fn prepared(
+        boot: Boot,
+        prepared: PreparedFormSet,
+        provider: P,
+        provider_handle: P::Handle,
+    ) -> Result<Self, Status> {
+        let guid = prepared.export().guid;
         let database = boot
             .locate::<HiiDatabaseProtocol>(&HiiDatabaseProtocol::GUID)
             .ok_or(Status::NOT_FOUND)?;
-        let prepared = PreparedFormSet::new(set, guid).map_err(|_| Status::INVALID_PARAMETER)?;
         let packages = prepared
             .package_list()
             .map_err(|_| Status::INVALID_PARAMETER)?;
-
         let mut path = [0u8; PATH_LENGTH];
         path[..4].copy_from_slice(&[1, 4, VENDOR_NODE_LENGTH, 0]);
         path[4..20].copy_from_slice(&guid);
