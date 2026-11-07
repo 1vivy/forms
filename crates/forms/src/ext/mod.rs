@@ -171,6 +171,16 @@ pub trait Handler {
         let _ = (field, state);
         None
     }
+
+    /// Returns the value and decoration of a row while its editor is open.
+    ///
+    /// A control that adjusts a value in the row itself implements this, so
+    /// the row follows the editor state before the value is written. The
+    /// default keeps the stored value.
+    fn format_editing(&self, field: &Field<'_>, state: &EditState) -> Option<(String, Decoration)> {
+        let _ = (field, state);
+        None
+    }
 }
 
 /// The handlers of one session.

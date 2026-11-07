@@ -463,6 +463,10 @@ impl<H: Copy + Eq> Session<H> {
         let Some((handle, set, page_key)) = self.current() else {
             return self.root_view();
         };
+        let editing = self
+            .editor
+            .as_ref()
+            .map(|editor| (editor.row, editor.state.clone()));
         let mut rows = Vec::new();
         let mut selected_key = Key::default();
         let mut any_selected = false;
@@ -505,7 +509,20 @@ impl<H: Copy + Eq> Session<H> {
                     },
                     None => None,
                 };
-                let (text, decoration) = self.registry.format(row, value.as_ref());
+                let field = Field {
+                    row,
+                    value: value.as_ref(),
+                };
+                let live = editing
+                    .as_ref()
+                    .filter(|(key, _)| *key == row.key)
+                    .and_then(|(_, state)| {
+                        self.registry
+                            .handler(&row.control)
+                            .and_then(|handler| handler.format_editing(&field, state))
+                    });
+                let (text, decoration) =
+                    live.unwrap_or_else(|| self.registry.format(row, value.as_ref()));
                 let selectable = row.control.is_interactive()
                     && !disabled
                     && (self.readable_rows || !matches!(row.control, Control::Text(_)));
@@ -1495,5 +1512,67 @@ mod tests {
         session.view(&mut provider);
         assert!(!session.poll(500));
         assert!(session.poll(1_500));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::{Event, Input, Session};
+    use crate::ext::Decoration;
+    use crate::model::{Builder, Choice, Control, FormSet, Key, MemoryProvider, Store, Value};
+    use alloc::string::String;
+    use alloc::vec;
+
+    /// A slider row follows the editor before the value is written.
+    #[test]
+    fn a_slider_row_tracks_its_editor() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        builder
+            .row(
+                "Fan",
+                Control::Slider {
+                    minimum: 0,
+                    maximum: 3,
+                    step: 1,
+                    unit: String::from("s"),
+                    labels: vec![Choice::new("Off", 0)],
+                },
+            )
+            .set_binding(Key(80));
+        let set: FormSet = builder.build();
+        let mut provider = MemoryProvider::new(vec![(0u8, set.clone())]);
+        provider.set(Key(80), Value::Number(0));
+        let mut session = Session::new(vec![(0u8, set)]).with_back_row(false);
+        assert!(session.enter(Key(1)));
+
+        let view = session.view(&mut provider);
+        assert_eq!(view.rows[0].value, "Off");
+        assert_eq!(
+            view.rows[0].decoration,
+            Decoration::Slider {
+                position: 0,
+                minimum: 0,
+                maximum: 3
+            }
+        );
+
+        assert_eq!(session.input(Input::Enter, &mut provider), Event::Changed);
+        assert_eq!(session.input(Input::Up, &mut provider), Event::Changed);
+        let view = session.view(&mut provider);
+        assert_eq!(view.rows[0].value, "1 s");
+        assert_eq!(
+            view.rows[0].decoration,
+            Decoration::Slider {
+                position: 1,
+                minimum: 0,
+                maximum: 3
+            }
+        );
+        assert_eq!(
+            provider.store.read(Key(80)),
+            Ok(Value::Number(0)),
+            "the row follows the editor before the value is written"
+        );
     }
 }

@@ -869,3 +869,71 @@ mod tests {
         assert_ne!(buffer[(1, y)].bg, Color::Reset);
     }
 }
+
+#[cfg(test)]
+mod slider_tests {
+    use super::FormsWidget;
+    use crate::widgets::Theme;
+    use crate::{Decoration, Presentation, RowView, Truncation, View};
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::widgets::Widget;
+
+    /// Returns the line of the slider row.
+    fn line(position: u64) -> Vec<String> {
+        let view = View {
+            path: Vec::new(),
+            title: String::from("Setup"),
+            rows: vec![RowView {
+                key: crate::Key(1),
+                label: String::from("Fan"),
+                value: alloc::format!("{position} s"),
+                help: String::new(),
+                decoration: Decoration::Slider {
+                    position,
+                    minimum: 0,
+                    maximum: 3,
+                },
+                selectable: true,
+                enabled: true,
+                uncertain: false,
+                presentation: Presentation {
+                    label_limit: None,
+                    truncation: Truncation::End,
+                },
+            }],
+            selected: Some(0),
+            help: String::new(),
+            editor: None,
+            message: None,
+            modal: None,
+        };
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&view).render(area, &mut buffer);
+        let y = (0..area.height)
+            .find(|y| {
+                let text: String = (0..area.width).map(|x| buffer[(x, *y)].symbol()).collect();
+                text.contains("Fan")
+            })
+            .expect("the row draws");
+        (0..area.width)
+            .map(|x| String::from(buffer[(x, y)].symbol()))
+            .collect()
+    }
+
+    /// The bar of the row follows the position.
+    #[test]
+    fn the_slider_bar_follows_the_position() {
+        let low = line(0);
+        let high = line(3);
+        assert_ne!(low, high);
+        let full = String::from(Theme::default().bar_full);
+        let low_full = low.iter().filter(|symbol| **symbol == full).count();
+        let high_full = high.iter().filter(|symbol| **symbol == full).count();
+        assert!(high_full > low_full);
+    }
+}

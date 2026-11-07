@@ -455,6 +455,19 @@ impl Handler for Slider {
         })
     }
 
+    fn format_editing(&self, field: &Field<'_>, state: &EditState) -> Option<(String, Decoration)> {
+        let (minimum, maximum, _, unit, labels) = Self::parts(field);
+        let position = state.value.clamp(minimum, maximum);
+        Some((
+            Self::text(position, &unit, &labels),
+            Decoration::Slider {
+                position,
+                minimum,
+                maximum,
+            },
+        ))
+    }
+
     fn edit(&self, field: &Field<'_>, state: &mut EditState, input: Input) -> EditStep {
         let (minimum, maximum, step, _, _) = Self::parts(field);
         match input {
