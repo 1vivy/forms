@@ -54,26 +54,22 @@ pub(crate) struct Page {
 
 /// Returns the page of a mode of `mode` pixels.
 ///
-/// Every edge keeps one tenth of the mode. The scale is the largest integer
-/// that keeps [`COLUMNS`] columns and [`ROWS`] rows; a mode too small for both
-/// keeps a scale of one. The page is centred in the area inside the margins.
+/// The margins come from [`forms::page::Margins::default`], which keeps one
+/// tenth on every edge. The scale is the largest integer that keeps
+/// [`COLUMNS`] columns and [`ROWS`] rows; a mode too small for both keeps a
+/// scale of one. The page is centred in the area inside the margins.
 pub(crate) fn page(mode: PixelSize) -> Page {
-    let margin_x = mode.width / 10;
-    let margin_y = mode.height / 10;
-    let area = PixelSize::new(
-        mode.width.saturating_sub(margin_x * 2),
-        mode.height.saturating_sub(margin_y * 2),
+    let placement = forms::page::placement(
+        (mode.width, mode.height),
+        (CELL.width, CELL.height),
+        COLUMNS,
+        ROWS,
+        forms::page::Margins::default(),
     );
-    let scale = (area.width / (COLUMNS * CELL.width))
-        .min(area.height / (ROWS * CELL.height))
-        .max(1);
-    let size = PixelSize::new(area.width / scale, area.height / scale);
-    let left = margin_x + (area.width - size.width * scale) / 2;
-    let top = margin_y + (area.height - size.height * scale) / 2;
     Page {
-        origin: Point::new(left as i32, top as i32),
-        scale,
-        size,
+        origin: Point::new(placement.left as i32, placement.top as i32),
+        scale: placement.scale,
+        size: PixelSize::new(placement.width, placement.height),
     }
 }
 

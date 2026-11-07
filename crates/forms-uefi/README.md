@@ -11,9 +11,10 @@ a `Shell`, then calls `run` or `run_with`.
 - The display is the graphics output when the firmware publishes one. A mode
   without a usable frame buffer, or no graphics output at all, falls back to
   the inherited text console.
-- The page keeps a margin of one tenth of the display on every edge. On the
-  graphics output it uses the largest integer scale of a 6 by 10 font cell that
-  keeps 40 columns and 16 rows.
+- The page keeps the margins of `forms::page::Margins::default()`, which is one
+  tenth of the display on every edge. On the graphics output it uses the
+  largest integer scale of a 6 by 10 font cell that keeps 40 columns and 16
+  rows.
 - The input is `EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL` when available. The basic
   `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` on the same console handle is the fallback.
   The front end opens one input source, so a key stroke arrives once.

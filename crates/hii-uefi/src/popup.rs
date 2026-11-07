@@ -11,25 +11,15 @@
 //! A warning or an error question selects No first, so one Enter refuses it.
 //! A modal with a Cancel button selects Cancel first.
 //!
-//! `ask` is the consumer for a caller that has no form set. It shows the
-//! modal through the presenter without a firmware call.
+//! `ask` is the consumer for a caller that has no form set. It publishes its
+//! own message package list, calls `CreatePopup` of the firmware browser and
+//! removes the list again, as before.
 
 use alloc::string::String;
 
 use forms::{Button, ButtonRole, Error, Modal, ModalStyle};
 
-/// The available answers, in display order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PopupKind {
-    /// Acknowledge a message.
-    Ok,
-    /// Accept or cancel an operation.
-    OkCancel,
-    /// Answer a question.
-    YesNo,
-    /// Answer a question or cancel it.
-    YesNoCancel,
-}
+pub use crate::map::PopupKind;
 
 /// Shows a modal and returns the answer that the person gave.
 ///
@@ -148,19 +138,72 @@ pub fn answer_of(kind: PopupKind, role: ButtonRole) -> Option<usize> {
     }
 }
 
+/// Shows one popup and returns its answer index.
+///
+/// This is the firmware-free decision path: the caller supplies the kind, the
+/// style, the message and the presenter. The answer is checked against the
+/// kind, so a presenter cannot invent an answer.
+///
+/// # Errors
+///
+/// Returns an error when the message is empty, when the presenter fails, or
+/// when the presenter answers a role that the kind does not offer. The code of
+/// such an error is [`INVALID_ANSWER`].
+///
+/// # Examples
+///
+/// ```
+/// use forms::{ButtonRole, Error, Modal, ModalStyle};
+/// use hii_uefi::popup::{PopupKind, Presenter, decide};
+///
+/// struct Refuse;
+///
+/// impl Presenter for Refuse {
+///     fn present(&mut self, modal: &mut Modal) -> Result<ButtonRole, Error> {
+///         Ok(modal.buttons[modal.selected].role)
+///     }
+/// }
+///
+/// let answer = decide(PopupKind::OkCancel, ModalStyle::Info, "Continue?", &mut Refuse);
+/// assert_eq!(answer, Ok(1));
+/// ```
+pub fn decide(
+    kind: PopupKind,
+    style: ModalStyle,
+    message: &str,
+    presenter: &mut impl Presenter,
+) -> Result<usize, Error> {
+    if message.is_empty() {
+        return Err(Error {
+            code: INVALID_ANSWER,
+            reason: String::from("The popup has no message"),
+        });
+    }
+    let mut modal = modal_of(style, kind, message);
+    let role = presenter.present(&mut modal)?;
+    answer_of(kind, role).ok_or_else(|| Error {
+        code: INVALID_ANSWER,
+        reason: String::from("The answer is not one that the popup offers"),
+    })
+}
+
+/// The error code of an answer that a popup does not offer.
+pub const INVALID_ANSWER: u64 = 2;
+
 /// The protocol table, the presenter and the resolver of one installation.
 #[cfg(target_os = "uefi")]
 mod serve {
     use core::cell::RefCell;
 
-    use forms::ModalStyle;
     use uefi_raw::Status;
     use uefi_raw::protocol::hii::popup::{
         HiiPopupProtocol, HiiPopupSelection, HiiPopupStyle, HiiPopupType,
     };
     use uefi_raw::protocol::hii::{HiiHandle, StringId};
 
-    use super::{PopupKind, Presenter, Strings, answer_of, modal_of};
+    use crate::map::{kind_of, selection_of, style_of};
+
+    use super::{Presenter, Strings, decide};
 
     /// One installed protocol table with its two services.
     #[repr(C)]
@@ -169,7 +212,6 @@ mod serve {
         presenter: RefCell<P>,
         strings: RefCell<S>,
         /// The device path of a handle that this context creates.
-        #[cfg(target_os = "uefi")]
         pub(super) path: [u8; 24],
     }
 
@@ -183,7 +225,6 @@ mod serve {
                 },
                 presenter: RefCell::new(presenter),
                 strings: RefCell::new(strings),
-                #[cfg(target_os = "uefi")]
                 path: vendor_path(),
             }
         }
@@ -208,24 +249,19 @@ mod serve {
                     .resolve(handle, message)
                     .ok_or(Status::INVALID_PARAMETER)?
             };
-            let mut modal = modal_of(style_of(style), kind, &text);
-            let role = {
-                let Ok(mut presenter) = self.presenter.try_borrow_mut() else {
-                    return Err(Status::ACCESS_DENIED);
-                };
-                match presenter.present(&mut modal) {
-                    Ok(role) => role,
-                    Err(error) => {
-                        let status = Status(error.code as usize);
-                        return Err(if status.is_error() {
-                            status
-                        } else {
-                            Status::ABORTED
-                        });
+            let mut presenter = self
+                .presenter
+                .try_borrow_mut()
+                .map_err(|_| Status::ACCESS_DENIED)?;
+            let answer =
+                decide(kind, style_of(style), &text, &mut *presenter).map_err(|error| {
+                    let status = Status(error.code as usize);
+                    if status.is_error() {
+                        status
+                    } else {
+                        Status::ABORTED
                     }
-                }
-            };
-            let answer = answer_of(kind, role).ok_or(Status::INVALID_PARAMETER)?;
+                })?;
             Ok(selection_of(kind, answer))
         }
     }
@@ -262,46 +298,8 @@ mod serve {
         }
     }
 
-    /// Maps the ABI style to the model style.
-    pub(super) fn style_of(style: HiiPopupStyle) -> ModalStyle {
-        if style == HiiPopupStyle::WARNING {
-            ModalStyle::Warning
-        } else if style == HiiPopupStyle::ERROR {
-            ModalStyle::Error
-        } else {
-            ModalStyle::Info
-        }
-    }
-
-    /// Maps the ABI type to the model kind.
-    pub(super) fn kind_of(kind: HiiPopupType) -> Option<PopupKind> {
-        if kind == HiiPopupType::OK {
-            Some(PopupKind::Ok)
-        } else if kind == HiiPopupType::OK_CANCEL {
-            Some(PopupKind::OkCancel)
-        } else if kind == HiiPopupType::YES_NO {
-            Some(PopupKind::YesNo)
-        } else if kind == HiiPopupType::YES_NO_CANCEL {
-            Some(PopupKind::YesNoCancel)
-        } else {
-            None
-        }
-    }
-
-    /// Maps an answer index to the ABI answer.
-    pub(super) fn selection_of(kind: PopupKind, index: usize) -> HiiPopupSelection {
-        match (kind, index) {
-            (PopupKind::Ok | PopupKind::OkCancel, 0) => HiiPopupSelection::OK,
-            (PopupKind::OkCancel, 1) => HiiPopupSelection::CANCEL,
-            (PopupKind::YesNo | PopupKind::YesNoCancel, 0) => HiiPopupSelection::YES,
-            (PopupKind::YesNo | PopupKind::YesNoCancel, 1) => HiiPopupSelection::NO,
-            _ => HiiPopupSelection::CANCEL,
-        }
-    }
-
     /// Builds the vendor device path of a created handle.
-    #[cfg(target_os = "uefi")]
-    fn vendor_path() -> [u8; 24] {
+    pub(super) fn vendor_path() -> [u8; 24] {
         let mut path = [0u8; 24];
         path[..4].copy_from_slice(&[1, 4, 20, 0]);
         path[4..20].copy_from_slice(&HiiPopupProtocol::GUID.to_bytes());
@@ -321,17 +319,28 @@ mod firmware {
     use core::mem::{align_of, size_of};
     use core::ptr::{self, NonNull};
 
-    use forms::{Error, ModalStyle};
+    use forms::{ButtonRole, Error, ModalStyle};
     use uefi_raw::protocol::device_path::DevicePathProtocol;
-    use uefi_raw::protocol::hii::popup::{HiiPopupProtocol, HiiPopupSelection};
+    use uefi_raw::protocol::hii::database::HiiDatabaseProtocol;
+    use uefi_raw::protocol::hii::font::FontInfo;
+    use uefi_raw::protocol::hii::popup::{HiiPopupProtocol, HiiPopupSelection, HiiPopupType};
     use uefi_raw::protocol::hii::string::HiiStringProtocol;
     use uefi_raw::protocol::hii::{HiiHandle, StringId};
     use uefi_raw::table::boot::InterfaceType;
-    use uefi_raw::{Handle, Status};
+    use uefi_raw::{Guid, Handle, Status};
 
-    use super::serve::{Context, create};
-    use super::{PopupKind, Presenter, Strings};
+    use super::serve::{Context, vendor_path};
+    use super::{Presenter, Strings};
     use crate::raw::Boot;
+
+    /// The language that the resolver uses when a package list reports none.
+    const DEFAULT_LANGUAGE: &[u8] = b"eng\0";
+
+    /// The package-list GUID of the message that `ask` publishes.
+    const MESSAGE_LIST: Guid = uefi_raw::guid!("3d1b8a7c-5e42-4a91-8c0d-6f2e5b4a9c11");
+
+    /// The string that holds the message. String 1 names the language.
+    const MESSAGE_ID: StringId = 2;
 
     /// Resolves messages through `EFI_HII_STRING_PROTOCOL`.
     pub struct HiiStrings {
@@ -350,7 +359,6 @@ mod firmware {
             let protocol = boot
                 .locate::<HiiStringProtocol>(&HiiStringProtocol::GUID)
                 .ok_or(Status::NOT_FOUND)?;
-            let _ = boot;
             Ok(Self {
                 protocol,
                 languages: alloc::collections::BTreeMap::new(),
@@ -363,21 +371,23 @@ mod firmware {
             if let Some(language) = self.languages.get(&key) {
                 return language.clone();
             }
-            let mut language = Vec::from(b"eng\0" as &[u8]);
+            let mut language = Vec::from(DEFAULT_LANGUAGE);
             let mut size = 0usize;
             // SAFETY: The protocol belongs to the firmware.
             let status = unsafe {
-                // SAFETY: The table is live.
-                let protocol = self.protocol.as_ref();
-                (protocol.get_languages)(self.protocol.as_ptr(), handle, ptr::null_mut(), &mut size)
+                (self.protocol.as_ref().get_languages)(
+                    self.protocol.as_ptr(),
+                    handle,
+                    ptr::null_mut(),
+                    &mut size,
+                )
             };
             if status == Status::BUFFER_TOO_SMALL && size > 0 {
                 let mut buffer = alloc::vec![0u8; size];
                 let mut length = size;
                 // SAFETY: The buffer holds `size` bytes.
                 let status = unsafe {
-                    let protocol = self.protocol.as_ref();
-                    (protocol.get_languages)(
+                    (self.protocol.as_ref().get_languages)(
                         self.protocol.as_ptr(),
                         handle,
                         buffer.as_mut_ptr(),
@@ -399,29 +409,31 @@ mod firmware {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     impl Strings for HiiStrings {
         fn resolve(&mut self, handle: HiiHandle, message: StringId) -> Option<String> {
             let language = self.language(handle);
-            let mut token = message;
             let mut buffer = alloc::vec![0u16; 256];
             let mut length = buffer.len();
+            let mut font: *mut FontInfo = ptr::null_mut();
             // SAFETY: The buffers are writable and the language is NUL
             // terminated.
             let status = unsafe {
-                let protocol = self.protocol.as_ref();
-                (protocol.get_string)(
+                (self.protocol.as_ref().get_string)(
                     self.protocol.as_ptr(),
                     language.as_ptr(),
                     handle,
-                    &mut token,
-                    &mut buffer,
+                    message,
+                    buffer.as_mut_ptr(),
                     &mut length,
+                    &mut font,
                 )
             };
             if status.is_error() {
                 return None;
             }
-            Some(crate::text::from_ucs2(buffer.as_ptr()))
+            // SAFETY: The firmware filled the buffer with a NUL-terminated string.
+            Some(unsafe { crate::text::from_ucs2(buffer.as_ptr()) })
         }
     }
 
@@ -526,43 +538,323 @@ mod firmware {
         }
     }
 
-    /// Shows one message through a presenter.
+    /// Shows one message through the firmware browser.
     ///
-    /// The call needs no firmware because the caller supplies the text.
+    /// The call publishes a package list that holds the message, calls
+    /// `CreatePopup` of the installed browser and removes the list again, so a
+    /// caller with no form set reaches the browser of the firmware.
     ///
     /// # Errors
     ///
-    /// Returns the presenter failure.
+    /// Returns the firmware status of a failed step as a forms error.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use hii_uefi::popup::ask;
-    /// # use forms::{ButtonRole, Error, Modal};
-    /// # struct Accept;
-    /// # impl hii_uefi::popup::Presenter for Accept {
-    /// #     fn present(&mut self, _modal: &mut Modal) -> Result<ButtonRole, Error> { Ok(ButtonRole::Default) }
-    /// # }
-    /// # fn example() -> Result<(), Error> {
-    /// let mut presenter = Accept;
-    /// let answer = ask(&mut presenter, forms::ModalStyle::Info, "The write finished.")?;
-    /// assert_eq!(answer, ButtonRole::Default);
-    /// # Ok(())
+    /// use hii_uefi::{popup::ask, raw::Boot};
+    /// # fn example(boot: Boot) {
+    /// let answer = ask(boot, forms::ModalStyle::Info, "The write finished.");
+    /// let _ = answer;
     /// # }
     /// ```
-    pub fn ask<P: Presenter>(
-        presenter: &mut P,
-        style: ModalStyle,
-        message: &str,
-    ) -> Result<forms::ButtonRole, Error> {
-        let mut modal = super::modal_of(style, PopupKind::Ok, message);
-        presenter.present(&mut modal)
+    pub fn ask(boot: Boot, style: ModalStyle, message: &str) -> Result<ButtonRole, Error> {
+        let database = boot
+            .locate::<HiiDatabaseProtocol>(&HiiDatabaseProtocol::GUID)
+            .ok_or_else(|| error(Status::NOT_FOUND))?;
+        let protocol = boot
+            .locate::<HiiPopupProtocol>(&HiiPopupProtocol::GUID)
+            .ok_or_else(|| error(Status::NOT_FOUND))?;
+        let packages = hii_ifr::encode_message(message, MESSAGE_LIST.to_bytes())
+            .map_err(|_| error(Status::INVALID_PARAMETER))?;
+
+        let mut path = vendor_path();
+        let mut handle: Handle = ptr::null_mut();
+        // SAFETY: The path lives on the stack for this call and the firmware
+        // copies it.
+        let status = unsafe {
+            (boot.services().install_protocol_interface)(
+                &mut handle,
+                &DevicePathProtocol::GUID,
+                InterfaceType::NATIVE_INTERFACE,
+                path.as_mut_ptr().cast(),
+            )
+        };
+        if status.is_error() {
+            return Err(error(status));
+        }
+        let mut package: HiiHandle = ptr::null_mut();
+        // SAFETY: The codec produced a complete package list.
+        let status = unsafe {
+            (database.as_ref().new_package_list)(
+                database.as_ptr(),
+                packages.as_ptr().cast(),
+                handle,
+                &mut package,
+            )
+        };
+        if status.is_error() {
+            remove_path(&boot, handle, path.as_mut_ptr().cast());
+            return Err(error(status));
+        }
+        let mut selection = HiiPopupSelection::CANCEL;
+        // SAFETY: The protocol belongs to the firmware and the answer pointer
+        // is writable.
+        let status = unsafe {
+            (protocol.as_ref().create_popup)(
+                protocol.as_ptr(),
+                abi_style(style),
+                HiiPopupType::OK,
+                package,
+                MESSAGE_ID,
+                &mut selection,
+            )
+        };
+        // SAFETY: The list was installed on this handle.
+        unsafe {
+            let _ = (database.as_ref().remove_package_list)(database.as_ptr(), package);
+        }
+        remove_path(&boot, handle, path.as_mut_ptr().cast());
+        if status.is_error() {
+            return Err(error(status));
+        }
+        Ok(role_of(selection))
+    }
+
+    /// Maps a firmware style to the ABI style of this call.
+    fn abi_style(style: ModalStyle) -> uefi_raw::protocol::hii::popup::HiiPopupStyle {
+        match style {
+            ModalStyle::Warning => uefi_raw::protocol::hii::popup::HiiPopupStyle::WARNING,
+            ModalStyle::Error | ModalStyle::Danger => {
+                uefi_raw::protocol::hii::popup::HiiPopupStyle::ERROR
+            }
+            ModalStyle::Info => uefi_raw::protocol::hii::popup::HiiPopupStyle::INFO,
+        }
+    }
+
+    /// Maps a firmware answer to the role of a button.
+    fn role_of(selection: HiiPopupSelection) -> ButtonRole {
+        if selection == HiiPopupSelection::CANCEL {
+            ButtonRole::Cancel
+        } else if selection == HiiPopupSelection::NO {
+            ButtonRole::Other(0)
+        } else {
+            ButtonRole::Default
+        }
+    }
+
+    /// Removes the vendor device path of a created handle.
+    fn remove_path(boot: &Boot, handle: Handle, path: *mut core::ffi::c_void) {
+        // SAFETY: This path was installed on this handle.
+        let _ = unsafe {
+            (boot.services().uninstall_protocol_interface)(handle, &DevicePathProtocol::GUID, path)
+        };
+    }
+
+    /// Builds a forms error from a firmware status.
+    fn error(status: Status) -> Error {
+        Error {
+            code: status.0 as u64,
+            reason: String::from("the HII popup protocol failed"),
+        }
     }
 
     /// Aligns a pointer upwards.
     fn align_pointer(pointer: *mut u8, align: usize) -> *mut u8 {
         let address = pointer as usize;
         let mask = align - 1;
-        (address + mask) & !mask
+        ((address + mask) & !mask) as *mut u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{INVALID_ANSWER, PopupKind, Presenter, answer_of, decide, modal_of};
+    use crate::map::{kind_of, map_request, request_value, selection_of, style_of};
+    use alloc::string::String;
+    use forms::{ButtonRole, Error, Key, Modal, ModalStyle, Request, Scope};
+    use uefi_raw::protocol::hii::popup::{HiiPopupSelection, HiiPopupStyle, HiiPopupType};
+
+    /// Accepts the highlighted button.
+    struct Accept;
+
+    impl Presenter for Accept {
+        fn present(&mut self, modal: &mut Modal) -> Result<ButtonRole, Error> {
+            Ok(modal.buttons[modal.selected].role)
+        }
+    }
+
+    /// Answers a role that no popup offers.
+    struct Invent;
+
+    impl Presenter for Invent {
+        fn present(&mut self, _modal: &mut Modal) -> Result<ButtonRole, Error> {
+            Ok(ButtonRole::Other(9))
+        }
+    }
+
+    /// Cannot show anything.
+    struct Blind;
+
+    impl Presenter for Blind {
+        fn present(&mut self, _modal: &mut Modal) -> Result<ButtonRole, Error> {
+            Err(Error::new("no display"))
+        }
+    }
+
+    #[test]
+    fn a_warning_question_selects_no_first() {
+        let modal = modal_of(ModalStyle::Warning, PopupKind::YesNo, "Erase?");
+        assert_eq!(modal.buttons[modal.selected].label, "No");
+        let modal = modal_of(ModalStyle::Error, PopupKind::YesNoCancel, "Fail?");
+        assert_eq!(modal.buttons[modal.selected].label, "No");
+        let modal = modal_of(ModalStyle::Info, PopupKind::YesNo, "Continue?");
+        assert_eq!(modal.buttons[modal.selected].label, "Yes");
+    }
+
+    #[test]
+    fn a_cancel_button_is_the_safe_default() {
+        let modal = modal_of(ModalStyle::Danger, PopupKind::OkCancel, "Apply?");
+        assert_eq!(modal.buttons[modal.selected].role, ButtonRole::Cancel);
+        let modal = modal_of(ModalStyle::Info, PopupKind::YesNoCancel, "Apply?");
+        assert_eq!(modal.buttons[modal.selected].role, ButtonRole::Cancel);
+        let modal = modal_of(ModalStyle::Info, PopupKind::Ok, "Done");
+        assert_eq!(modal.buttons[modal.selected].role, ButtonRole::Default);
+    }
+
+    #[test]
+    fn one_enter_refuses_a_warning() {
+        assert_eq!(
+            decide(PopupKind::YesNo, ModalStyle::Warning, "Erase?", &mut Accept),
+            Ok(1)
+        );
+        assert_eq!(
+            decide(PopupKind::OkCancel, ModalStyle::Info, "Apply?", &mut Accept),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn an_answer_outside_the_kind_is_refused() {
+        assert_eq!(
+            decide(PopupKind::Ok, ModalStyle::Info, "Done", &mut Invent),
+            Err(Error {
+                code: INVALID_ANSWER,
+                reason: String::from("The answer is not one that the popup offers")
+            })
+        );
+        assert_eq!(
+            decide(PopupKind::Ok, ModalStyle::Info, "", &mut Accept),
+            Err(Error {
+                code: INVALID_ANSWER,
+                reason: String::from("The popup has no message")
+            })
+        );
+    }
+
+    #[test]
+    fn a_presenter_failure_is_reported() {
+        let answer = decide(PopupKind::Ok, ModalStyle::Info, "Done", &mut Blind);
+        assert!(answer.is_err());
+    }
+
+    #[test]
+    fn every_style_and_kind_has_one_mapping() {
+        assert_eq!(style_of(HiiPopupStyle::INFO), ModalStyle::Info);
+        assert_eq!(style_of(HiiPopupStyle::WARNING), ModalStyle::Warning);
+        assert_eq!(style_of(HiiPopupStyle::ERROR), ModalStyle::Error);
+        assert_eq!(style_of(HiiPopupStyle(9)), ModalStyle::Info);
+        assert_eq!(kind_of(HiiPopupType::OK), Some(PopupKind::Ok));
+        assert_eq!(kind_of(HiiPopupType::OK_CANCEL), Some(PopupKind::OkCancel));
+        assert_eq!(kind_of(HiiPopupType::YES_NO), Some(PopupKind::YesNo));
+        assert_eq!(
+            kind_of(HiiPopupType::YES_NO_CANCEL),
+            Some(PopupKind::YesNoCancel)
+        );
+        assert_eq!(kind_of(HiiPopupType(9)), None);
+    }
+
+    #[test]
+    fn every_answer_has_one_selection() {
+        assert_eq!(selection_of(PopupKind::Ok, 0), HiiPopupSelection::OK);
+        assert_eq!(
+            selection_of(PopupKind::OkCancel, 1),
+            HiiPopupSelection::CANCEL
+        );
+        assert_eq!(selection_of(PopupKind::YesNo, 1), HiiPopupSelection::NO);
+        assert_eq!(
+            selection_of(PopupKind::YesNoCancel, 0),
+            HiiPopupSelection::YES
+        );
+        assert_eq!(
+            selection_of(PopupKind::YesNoCancel, 2),
+            HiiPopupSelection::CANCEL
+        );
+        assert_eq!(
+            answer_of(PopupKind::YesNoCancel, ButtonRole::Cancel),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn requests_round_trip_through_the_firmware_values() {
+        let page = Key(4);
+        for (value, request) in [
+            (0u64, Request::None),
+            (1, Request::Restart),
+            (
+                2,
+                Request::Apply {
+                    scope: Scope::Set,
+                    leave: true,
+                },
+            ),
+            (
+                3,
+                Request::Discard {
+                    scope: Scope::Set,
+                    leave: true,
+                },
+            ),
+            (
+                4,
+                Request::Apply {
+                    scope: Scope::Page(page),
+                    leave: true,
+                },
+            ),
+            (
+                5,
+                Request::Discard {
+                    scope: Scope::Page(page),
+                    leave: true,
+                },
+            ),
+            (
+                6,
+                Request::Apply {
+                    scope: Scope::Page(page),
+                    leave: false,
+                },
+            ),
+            (
+                7,
+                Request::Discard {
+                    scope: Scope::Page(page),
+                    leave: false,
+                },
+            ),
+            (8, Request::Reconnect),
+            (
+                9,
+                Request::Apply {
+                    scope: Scope::Row(page),
+                    leave: false,
+                },
+            ),
+        ] {
+            assert_eq!(map_request(value, page), Ok(request));
+            assert_eq!(request_value(request), value);
+        }
+        assert!(map_request(42, page).is_err());
     }
 }

@@ -47,6 +47,8 @@ impl HiiHandleId {
 
 /// The driver behind one package list.
 struct Driver {
+    /// The driver handle that the controller services use.
+    handle: Handle,
     /// The device path that the configuration header needs.
     device_path: Vec<u8>,
     /// The configuration access protocol of the driver, when it has one.
@@ -271,6 +273,7 @@ impl HiiProvider {
         self.drivers.insert(
             id,
             Driver {
+                handle: driver,
                 device_path,
                 access,
             },
@@ -480,23 +483,26 @@ impl HiiProvider {
 
     /// Creates a string token in the package list of a handle.
     fn new_string(&mut self, handle: HiiHandleId, content: &str) -> Result<StringId, Error> {
-        let strings = self.string_protocol().ok_or_else(|| {
+        let language = self.language(handle)?;
+        let protocol = self.strings.ok_or_else(|| {
             Self::error(
                 Status::UNSUPPORTED,
                 "the firmware has no HII string protocol",
             )
         })?;
-        let language = self.language(handle)?;
         let units = text::ucs2(content);
         let mut token: StringId = 0;
-        // SAFETY: The language and the string are NUL terminated.
+        // SAFETY: The language and the string are NUL terminated and the
+        // token pointer is writable.
         let status = unsafe {
-            (strings.new_string)(
-                self.strings.map_or(ptr::null_mut(), NonNull::as_ptr),
+            (protocol.as_ref().new_string)(
+                protocol.as_ptr().cast_const(),
                 handle.raw(),
-                language.as_ptr(),
-                units.as_ptr(),
                 &mut token,
+                language.as_ptr(),
+                ptr::null(),
+                units.as_ptr(),
+                ptr::null(),
             )
         };
         if status.is_error() {
@@ -644,7 +650,7 @@ impl Provider for HiiProvider {
             Storage::Offset { store, offset } => {
                 self.read_stored(handle, row, store, offset, question.bytes)
             }
-            Storage::Name { store, name } => {
+            Storage::Name { store: _, name } => {
                 let entry = self.entry(handle)?;
                 let guid = entry.export.guid;
                 let header = config::header(&guid, "", &self.driver_path(handle)?);
@@ -775,6 +781,31 @@ impl Provider for HiiProvider {
         }
         Ok(())
     }
+
+    fn reconnect(&mut self, handle: Self::Handle) -> Result<(), Error> {
+        let driver = self
+            .drivers
+            .get(&handle)
+            .map(|driver| driver.handle)
+            .ok_or_else(|| Self::error(Status::NOT_FOUND, "the set is no longer published"))?;
+        let services = self.boot.services();
+        // SAFETY: The handle is the driver handle that the database returned.
+        let status =
+            unsafe { (services.disconnect_controller)(driver, ptr::null_mut(), ptr::null_mut()) };
+        if status.is_error() && status != Status::NOT_FOUND {
+            return Err(Self::status_error(
+                status,
+                "cannot disconnect the controller",
+            ));
+        }
+        // SAFETY: The same live handle; every controller path is eligible.
+        let status =
+            unsafe { (services.connect_controller)(driver, ptr::null(), ptr::null(), Boolean(1)) };
+        if status.is_error() {
+            return Err(Self::status_error(status, "cannot connect the controller"));
+        }
+        Ok(())
+    }
 }
 
 impl HiiProvider {
@@ -789,6 +820,6 @@ impl HiiProvider {
             .get(&handle)
             .and_then(|entry| entry.set.pages.first())
             .map_or(Key::default(), |page| page.key);
-        crate::map::map_request(u64::from(request.0), page)
+        crate::map::map_request(request.0 as u64, page)
     }
 }

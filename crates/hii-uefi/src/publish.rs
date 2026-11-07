@@ -19,7 +19,7 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use forms::{FormSet, Key, Provider, Request};
+use forms::{FormSet, Key, Provider};
 use uefi_raw::protocol::device_path::DevicePathProtocol;
 use uefi_raw::protocol::hii::config::{BrowserAction, HiiConfigAccessProtocol};
 use uefi_raw::protocol::hii::database::HiiDatabaseProtocol;
@@ -48,6 +48,8 @@ struct Context<P: Provider> {
     prepared: PreparedFormSet,
     path: [u8; PATH_LENGTH],
     boot: Boot,
+    /// The request of the last value write, for the next `Callback` call.
+    pending: core::cell::Cell<usize>,
 }
 
 /// One published package list with its Config Access protocol.
@@ -124,6 +126,7 @@ impl<P: Provider + 'static> Registration<P> {
                 prepared,
                 path,
                 boot,
+                pending: core::cell::Cell::new(0),
             });
         }
 
@@ -295,7 +298,7 @@ impl<P: Provider + 'static> Drop for Registration<P> {
 fn align_pointer(pointer: *mut u8, align: usize) -> *mut u8 {
     let address = pointer as usize;
     let mask = align - 1;
-    (address + mask) & !mask
+    ((address + mask) & !mask) as *mut u8
 }
 
 /// `EFI_HII_CONFIG_ACCESS_EXTRACT_CONFIG`.
@@ -318,10 +321,10 @@ unsafe extern "efiapi" fn extract<P: Provider>(
     let Ok(mut provider) = context.provider.try_borrow_mut() else {
         return Status::ACCESS_DENIED;
     };
-    // SAFETY: The firmware passes a NUL-terminated string or a null pointer.
     let request = if request.is_null() {
         None
     } else {
+        // SAFETY: The firmware passes a NUL-terminated string.
         Some(unsafe { text::from_ucs2(request) })
     };
     let answer = context.prepared.extract(
@@ -344,7 +347,7 @@ unsafe extern "efiapi" fn extract<P: Provider>(
             }
             if !results.is_null() {
                 // SAFETY: The caller guarantees a writable output pointer.
-                unsafe { results.write(buffer.as_ptr().cast::<Char16>().cast_mut()) };
+                unsafe { results.write(buffer.as_ptr().cast::<Char16>()) };
             }
             Status::SUCCESS
         }
@@ -392,7 +395,13 @@ unsafe extern "efiapi" fn route<P: Provider>(
         &context.path,
     );
     match answer {
-        Ok(_request) => Status::SUCCESS,
+        Ok(request) => {
+            // The browser reads the request in its next Callback call.
+            context
+                .pending
+                .set(crate::map::request_value(request) as usize);
+            Status::SUCCESS
+        }
         Err(error) => {
             let _ = progress;
             error.status
@@ -411,14 +420,17 @@ unsafe extern "efiapi" fn callback<P: Provider>(
     question_id: QuestionId,
     _kind: u8,
     _value: *mut IfrTypeValue,
-    _action_request: *mut BrowserActionRequest,
+    action_request: *mut BrowserActionRequest,
 ) -> Status {
-    if this.is_null() || action != BrowserAction::CHANGED {
-        return Status::SUCCESS;
+    if this.is_null() {
+        return Status::INVALID_PARAMETER;
     }
     // SAFETY: The caller guarantees a live context whose first field is this
     // table.
     let context = unsafe { &*this.cast::<Context<P>>() };
+    if action != BrowserAction::CHANGED {
+        return Status::SUCCESS;
+    }
     let Ok(mut provider) = context.provider.try_borrow_mut() else {
         return Status::ACCESS_DENIED;
     };
@@ -434,11 +446,29 @@ unsafe extern "efiapi" fn callback<P: Provider>(
     let Some(row) = context.prepared.formset().row(row).cloned() else {
         return Status::NOT_FOUND;
     };
-    match provider.action(context.provider_handle, context.prepared.formset(), &row) {
-        Ok(Request::None) => Status::SUCCESS,
-        Ok(_) => Status::SUCCESS,
-        Err(error) => Status(u32::try_from(error.code).unwrap_or(Status::DEVICE_ERROR.0) as usize),
+    let answer = provider.action(context.provider_handle, context.prepared.formset(), &row);
+    // A write reports its request first, because the browser calls Callback
+    // after the value changed.
+    let pending = context.pending.replace(0);
+    let (value, status) = match answer {
+        Ok(request) => {
+            let value = if pending != 0 {
+                pending
+            } else {
+                crate::map::request_value(request) as usize
+            };
+            (value, Status::SUCCESS)
+        }
+        Err(error) => (
+            0,
+            Status(usize::try_from(error.code).unwrap_or(Status::DEVICE_ERROR.0)),
+        ),
+    };
+    if !action_request.is_null() && value != 0 {
+        // SAFETY: The caller guarantees a writable request output.
+        unsafe { action_request.write(BrowserActionRequest(value)) };
     }
+    status
 }
 
 /// Returns the configuration error of one failure.

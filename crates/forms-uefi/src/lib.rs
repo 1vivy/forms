@@ -253,16 +253,21 @@ where
     served.and(cleared)
 }
 
-/// The page area of a text console: one tenth of every axis stays free. An
-/// axis shorter than ten cells keeps its whole length.
+/// The page area of a text console, inside the margins of
+/// [`forms::page::Margins::default`].
 fn margins(area: Rect) -> Rect {
-    let column = area.width / 10;
-    let row = area.height / 10;
+    let margins = forms::page::Margins::default();
+    let across = u32::from(area.width);
+    let down = u32::from(area.height);
+    let left = u16::try_from(across * margins.left / 1_000).unwrap_or(0);
+    let right = u16::try_from(across * margins.right / 1_000).unwrap_or(0);
+    let top = u16::try_from(down * margins.top / 1_000).unwrap_or(0);
+    let bottom = u16::try_from(down * margins.bottom / 1_000).unwrap_or(0);
     Rect::new(
-        area.x + column,
-        area.y + row,
-        area.width - column * 2,
-        area.height - row * 2,
+        area.x + left,
+        area.y + top,
+        area.width.saturating_sub(left.saturating_add(right)),
+        area.height.saturating_sub(top.saturating_add(bottom)),
     )
 }
 
