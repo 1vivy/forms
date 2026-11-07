@@ -132,8 +132,8 @@ impl GopDisplay {
         if mode.width == 0 || mode.height == 0 {
             return Err(Error::from(Status::UNSUPPORTED));
         }
-        let present = match info.pixel_format() {
-            PixelFormat::Rgb | PixelFormat::Bgr => {
+        let present = match (frame.drawing, info.pixel_format()) {
+            (crate::Drawing::Auto, PixelFormat::Rgb | PixelFormat::Bgr) => {
                 let order = if info.pixel_format() == PixelFormat::Rgb {
                     Order::Rgb
                 } else {
@@ -147,9 +147,12 @@ impl GopDisplay {
                     order,
                 })
             }
-            // A mode without a frame buffer, and a mode of a custom bitmask,
-            // both go through the firmware.
-            PixelFormat::Bitmask | PixelFormat::BltOnly => Present::Firmware,
+            // A Blt-only frame, a mode without a frame buffer and a mode of a
+            // custom bitmask all go through the firmware.
+            (crate::Drawing::Blt, _)
+            | (crate::Drawing::Auto, PixelFormat::Bitmask | PixelFormat::BltOnly) => {
+                Present::Firmware
+            }
         };
         let page = page(mode, frame);
         let mut display = Self {

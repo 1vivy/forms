@@ -60,11 +60,12 @@ mod input;
 mod text;
 
 use alloc::boxed::Box;
-use alloc::format;
 use core::time::Duration;
 
 use forms::render::{FormsWidget, Margins, Theme};
-use forms::{Event, Provider, Session};
+use forms::{
+    ButtonRole, Event, FormSet, Modal, ModalOutcome, Provider, Request, Row, Session, Value,
+};
 use graphics::GopDisplay;
 use input::Keys;
 use mousefood::embedded_graphics::pixelcolor::Rgb888;
@@ -99,14 +100,56 @@ pub enum Turn {
     End,
 }
 
+/// The display that the front end opened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Display {
+    /// What the page is drawn on.
+    pub surface: Surface,
+    /// The page width in cells.
+    pub columns: u16,
+    /// The page height in cells.
+    pub rows: u16,
+    /// The name of the open input protocol.
+    pub input: &'static str,
+}
+
+/// What a page is drawn on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Surface {
+    /// The graphics output, with its live mode in pixels and the page scale.
+    Graphics {
+        /// The live mode, width by height in pixels.
+        mode: (u32, u32),
+        /// How many mode pixels one page pixel covers.
+        scale: u32,
+    },
+    /// The inherited text console.
+    Text,
+}
+
+impl core::fmt::Display for Display {
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.surface {
+            Surface::Graphics { mode, scale } => write!(
+                out,
+                "Graphics output {}x{}, scale {scale}, {}x{} cells, {}",
+                mode.0, mode.1, self.columns, self.rows, self.input
+            ),
+            Surface::Text => write!(
+                out,
+                "Text console {}x{} cells, {}",
+                self.columns, self.rows, self.input
+            ),
+        }
+    }
+}
+
 /// The owner of one session: it reacts to every turn.
 pub trait Shell<H, P> {
-    /// The front end opened its display. `display` describes it. The page is
-    /// drawn after this call.
+    /// The front end opened its display. The page is drawn after this call.
     ///
-    /// The description names the backend, its size and the input protocol. A
-    /// consumer logs it or records it. This crate logs nothing.
-    fn opened(&mut self, session: &mut Session<H>, provider: &mut P, display: &str);
+    /// A consumer logs or records the display. This crate logs nothing.
+    fn opened(&mut self, session: &mut Session<H>, provider: &mut P, display: &Display);
 
     /// One turn. `pressed` tells whether a key arrived. `event` is the result
     /// of its input on the session, or [`Event::None`].
@@ -117,6 +160,13 @@ pub trait Shell<H, P> {
         pressed: bool,
         event: Event,
     ) -> Turn;
+
+    /// Whether another owner of the screen wrote over the page since the last
+    /// turn, such as a firmware console message. The front end then clears the
+    /// display and draws the whole page again. The default never reports damage.
+    fn damaged(&mut self) -> bool {
+        false
+    }
 }
 
 /// The pause between two turns: the console is polled 100 times a second.
@@ -153,6 +203,8 @@ pub struct Frame {
     pub theme: Theme,
     /// The map from a firmware key stroke to a form input.
     pub key_map: KeyMap,
+    /// How the pixels reach the graphics output.
+    pub drawing: Drawing,
 }
 
 impl Default for Frame {
@@ -163,7 +215,87 @@ impl Default for Frame {
             margins: Margins::default(),
             theme: Theme::default(),
             key_map: map_key,
+            drawing: Drawing::Auto,
         }
+    }
+}
+
+/// How the pixels of the page reach the graphics output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Drawing {
+    /// Write the memory-mapped frame buffer when the mode has one, and use
+    /// `Blt` otherwise.
+    #[default]
+    Auto,
+    /// Always use `Blt`, so the firmware copies every pixel. A platform whose
+    /// frame buffer the firmware does not keep coherent with the panel needs
+    /// this.
+    Blt,
+}
+
+/// Shows one modal over an empty page and returns the role that the person
+/// chose.
+///
+/// The modal takes every key stroke. The forms crate highlights the Cancel
+/// button first, so one Enter refuses a question that offers it, and a
+/// dismissal answers [`ButtonRole::Cancel`]. `idle` runs once per turn, so a
+/// caller can poll a host interface while the modal waits; [`Turn::End`] from
+/// it ends the wait with `EFI_ABORTED`, so a caller never reads a missing
+/// answer as consent.
+///
+/// # Errors
+///
+/// Returns the same failures as [`run_with`], and `EFI_ABORTED` when `idle`
+/// ended the wait before the modal was answered.
+pub fn ask(modal: Modal, frame: &Frame, idle: impl FnMut() -> Turn) -> uefi::Result<ButtonRole> {
+    let mut session = Session::<()>::new(alloc::vec::Vec::new());
+    session.open_modal(modal);
+    let mut shell = Ask { idle, answer: None };
+    run_with(&mut session, &mut Empty, &mut shell, frame)?;
+    shell.answer.ok_or_else(|| Error::from(Status::ABORTED))
+}
+
+/// The shell of [`ask`]: it ends on the modal's answer.
+struct Ask<F> {
+    idle: F,
+    answer: Option<ButtonRole>,
+}
+
+impl<F: FnMut() -> Turn> Shell<(), Empty> for Ask<F> {
+    fn opened(&mut self, _: &mut Session<()>, _: &mut Empty, _: &Display) {}
+
+    fn turn(&mut self, _: &mut Session<()>, _: &mut Empty, _: bool, event: Event) -> Turn {
+        if let Event::Modal(outcome) = event {
+            self.answer = Some(match outcome {
+                ModalOutcome::Chosen { role, .. } => role,
+                ModalOutcome::Closed => ButtonRole::Cancel,
+            });
+            return Turn::End;
+        }
+        (self.idle)()
+    }
+}
+
+/// The provider of a modal page: it publishes no set.
+struct Empty;
+
+impl Provider for Empty {
+    type Handle = ();
+
+    fn formsets(&mut self) -> Result<alloc::vec::Vec<((), FormSet)>, forms::Error> {
+        Ok(alloc::vec::Vec::new())
+    }
+
+    fn read(&mut self, _: (), _: &FormSet, _: &Row) -> Result<Value, forms::Error> {
+        Err(forms::Error::new("a modal page publishes no set"))
+    }
+
+    fn write(&mut self, _: (), _: &FormSet, _: &Row, _: &Value) -> Result<Request, forms::Error> {
+        Err(forms::Error::new("a modal page publishes no set"))
+    }
+
+    fn action(&mut self, _: (), _: &FormSet, _: &Row) -> Result<Request, forms::Error> {
+        Err(forms::Error::new("a modal page publishes no set"))
     }
 }
 
@@ -247,14 +379,15 @@ where
                 shell.opened(
                     session,
                     provider,
-                    &format!(
-                        "Graphics output {}x{}, scale {scale}, {}x{} cells, {}",
-                        mode.width,
-                        mode.height,
-                        cells.width,
-                        cells.height,
-                        keys.kind()
-                    ),
+                    &Display {
+                        surface: Surface::Graphics {
+                            mode: (mode.width, mode.height),
+                            scale,
+                        },
+                        columns: cells.width,
+                        rows: cells.height,
+                        input: keys.kind(),
+                    },
                 );
                 serve(
                     &mut terminal,
@@ -295,12 +428,12 @@ where
     shell.opened(
         session,
         provider,
-        &format!(
-            "Text console {}x{} cells, {}",
-            cells.width,
-            cells.height,
-            keys.kind()
-        ),
+        &Display {
+            surface: Surface::Text,
+            columns: cells.width,
+            rows: cells.height,
+            input: keys.kind(),
+        },
     );
     let page = |area: Rect| margins(area, frame.margins);
     let served = serve(
@@ -398,6 +531,14 @@ where
             Turn::End => return Ok(()),
             Turn::Redraw => dirty = true,
             Turn::Continue => {}
+        }
+        // Another owner of the screen drew over the page, so the whole page
+        // is drawn again from a cleared display.
+        if shell.damaged() {
+            terminal
+                .clear()
+                .map_err(|_| Error::from(Status::DEVICE_ERROR))?;
+            dirty = true;
         }
         boot::stall(TURN);
     }
