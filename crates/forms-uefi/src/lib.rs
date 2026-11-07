@@ -8,8 +8,8 @@
 //! - It opens the console input once, preferring the extended keyboard
 //!   interface so that scan codes survive. The keys become `forms` inputs
 //!   through a [`KeyMap`].
-//! - It draws the page through the `forms` widget inside a margin of one tenth
-//!   of the display on every edge. The text display keeps the same margin.
+//! - It draws the page through the `forms` widget inside the margins of its
+//!   [`Frame`], with the frame's theme. The text display keeps the same margins.
 //! - It gives every turn to the [`Shell`], with or without a key stroke, so
 //!   the shell can run a timer, execute a command or end the session.
 //! - It clears the whole display when the session ends, so the next owner of
@@ -63,7 +63,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use core::time::Duration;
 
-use forms::render::FormsWidget;
+use forms::render::{FormsWidget, Margins, Theme};
 use forms::{Event, Provider, Session};
 use graphics::GopDisplay;
 use input::Keys;
@@ -122,7 +122,52 @@ pub trait Shell<H, P> {
 /// The pause between two turns: the console is polled 100 times a second.
 pub const TURN: Duration = Duration::from_millis(10);
 
-/// Runs one session with the default [`KeyMap`] until the shell ends it.
+/// How one session is framed: the page grid, the margins, the theme and the
+/// key map.
+///
+/// [`Frame::default`] is a keyboard front end with forty columns, sixteen
+/// rows, one tenth of margin on every edge and the default theme. A consumer
+/// changes single fields, so a phone states its own keys and margins without
+/// a front end of its own.
+///
+/// # Examples
+///
+/// ```
+/// use forms::render::{KeyNames, Margins};
+///
+/// let mut frame = forms_uefi::Frame::default();
+/// frame.margins = Margins { top: 50, bottom: 50, left: 35, right: 35 };
+/// frame.theme.keys = KeyNames::volume_and_power();
+/// frame.key_map = forms_uefi::map_key_phone;
+/// assert_eq!(frame.columns, 40);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Frame {
+    /// The fewest columns that the page keeps on the graphics output.
+    pub columns: u32,
+    /// The fewest rows that the page keeps on the graphics output.
+    pub rows: u32,
+    /// The margin of each display edge.
+    pub margins: Margins,
+    /// The theme the page draws with.
+    pub theme: Theme,
+    /// The map from a firmware key stroke to a form input.
+    pub key_map: KeyMap,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self {
+            columns: 40,
+            rows: 16,
+            margins: Margins::default(),
+            theme: Theme::default(),
+            key_map: map_key,
+        }
+    }
+}
+
+/// Runs one session in the default [`Frame`] until the shell ends it.
 ///
 /// # Errors
 ///
@@ -134,14 +179,14 @@ where
     P: Provider<Handle = H>,
     S: Shell<H, P>,
 {
-    run_with(session, provider, shell, map_key)
+    run_with(session, provider, shell, &Frame::default())
 }
 
-/// Runs one session with the key map of the consumer until the shell ends it.
+/// Runs one session in the consumer's [`Frame`] until the shell ends it.
 ///
-/// The key map turns one firmware key stroke, a scan code and a character,
-/// into a form input. A key without a form meaning still counts as a press, so
-/// the shell sees the turn.
+/// The frame's key map turns one firmware key stroke, a scan code and a
+/// character, into a form input. A key without a form meaning still counts as
+/// a press, so the shell sees the turn.
 ///
 /// # Errors
 ///
@@ -151,7 +196,7 @@ pub fn run_with<H, P, S>(
     session: &mut Session<H>,
     provider: &mut P,
     shell: &mut S,
-    key_map: KeyMap,
+    frame: &Frame,
 ) -> uefi::Result
 where
     H: Copy + Eq,
@@ -159,16 +204,17 @@ where
     S: Shell<H, P>,
 {
     let (stdin, stdout) = console::handles()?;
-    let mut keys = Keys::open(stdin, key_map)?;
-    match GopDisplay::open() {
-        Ok(display) => graphics(display, &mut keys, session, provider, shell),
-        Err(_) => text(stdout, &mut keys, session, provider, shell),
+    let mut keys = Keys::open(stdin, frame.key_map)?;
+    match GopDisplay::open(frame) {
+        Ok(display) => graphics(display, frame, &mut keys, session, provider, shell),
+        Err(_) => text(stdout, frame, &mut keys, session, provider, shell),
     }
 }
 
 /// Serves the session on the graphics output.
 fn graphics<H, P, S>(
     mut display: GopDisplay,
+    frame: &Frame,
     keys: &mut Keys,
     session: &mut Session<H>,
     provider: &mut P,
@@ -210,7 +256,15 @@ where
                         keys.kind()
                     ),
                 );
-                serve(&mut terminal, |area| area, keys, session, provider, shell)
+                serve(
+                    &mut terminal,
+                    |area| area,
+                    &frame.theme,
+                    keys,
+                    session,
+                    provider,
+                    shell,
+                )
             }
             Err(error) => Err(error),
         }
@@ -222,6 +276,7 @@ where
 /// Serves the session on the text console, for a host without graphics output.
 fn text<H, P, S>(
     stdout: uefi::Handle,
+    frame: &Frame,
     keys: &mut Keys,
     session: &mut Session<H>,
     provider: &mut P,
@@ -247,17 +302,24 @@ where
             keys.kind()
         ),
     );
-    let served = serve(&mut terminal, margins, keys, session, provider, shell);
+    let page = |area: Rect| margins(area, frame.margins);
+    let served = serve(
+        &mut terminal,
+        page,
+        &frame.theme,
+        keys,
+        session,
+        provider,
+        shell,
+    );
     let cleared = terminal.clear().map_err(|error| Error::from(error.status));
     let _ = terminal.show_cursor();
     served.and(cleared)
 }
 
-/// The page area of a text console, inside the margins of
-/// [`forms::render::Margins::default`].
-fn margins(area: Rect) -> Rect {
-    let (left, top, width, height) =
-        forms::render::Margins::default().area((u32::from(area.width), u32::from(area.height)));
+/// The page area of a text console, inside `margins`.
+fn margins(area: Rect, margins: Margins) -> Rect {
+    let (left, top, width, height) = margins.area((u32::from(area.width), u32::from(area.height)));
     Rect::new(
         area.x + u16::try_from(left).unwrap_or(0),
         area.y + u16::try_from(top).unwrap_or(0),
@@ -287,7 +349,8 @@ impl Fault for EmbeddedBackend<'_, GopDisplay, Rgb888> {
 /// Serves the session on an open terminal until the shell ends it.
 fn serve<B, H, P, S>(
     terminal: &mut Terminal<B>,
-    page: fn(Rect) -> Rect,
+    page: impl Fn(Rect) -> Rect,
+    theme: &Theme,
     keys: &mut Keys,
     session: &mut Session<H>,
     provider: &mut P,
@@ -306,7 +369,9 @@ where
             terminal
                 .draw(|frame| {
                     let area = page(frame.area());
-                    FormsWidget::new(&view).render(area, frame.buffer_mut());
+                    FormsWidget::new(&view)
+                        .with_theme(theme.clone())
+                        .render(area, frame.buffer_mut());
                 })
                 .map_err(|_| Error::from(Status::DEVICE_ERROR))?;
             if let Some(status) = terminal.backend_mut().fault() {

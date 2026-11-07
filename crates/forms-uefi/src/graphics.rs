@@ -7,10 +7,10 @@
 //! - [`GopDisplay`] owns the page buffer at the unscaled page size. It records
 //!   the smallest rectangle that a draw changed, so one flush copies that
 //!   rectangle and nothing else.
-//! - The page sits inside a margin of one tenth of the live mode on every edge,
-//!   measured in mode pixels, and is centred in the area that remains. Its own
-//!   pixels are `scale` mode pixels wide and high, and [`page`] picks the
-//!   largest integer scale that keeps [`COLUMNS`] columns and [`ROWS`] rows.
+//! - The page sits inside the margins of the [`Frame`], measured in mode
+//!   pixels, and is centred in the area that remains. Its own pixels are
+//!   `scale` mode pixels wide and high, and [`page`] picks the largest integer
+//!   scale that keeps the frame's columns and rows.
 //! - A mode with a memory-mapped frame buffer receives the pixels through that
 //!   buffer. A mode without one receives them from one `Blt` call per flush.
 //!
@@ -29,13 +29,7 @@ use uefi::boot::{self, ScopedProtocol};
 use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput, PixelFormat};
 use uefi::{Error, Status};
 
-use crate::console;
-
-/// The fewest columns the page keeps.
-const COLUMNS: u32 = 40;
-
-/// The fewest rows the page keeps.
-const ROWS: u32 = 16;
+use crate::{Frame, console};
 
 /// The font cell in pixels, before the scale of [`page`]: the 6 by 10 atlas
 /// that `mousefood` draws with.
@@ -52,19 +46,18 @@ pub(crate) struct Page {
     pub(crate) size: PixelSize,
 }
 
-/// Returns the page of a mode of `mode` pixels.
+/// Returns the page of a mode of `mode` pixels for `frame`.
 ///
-/// The margins come from [`forms::render::Margins::default`], which keeps one
-/// tenth on every edge. The scale is the largest integer that keeps
-/// [`COLUMNS`] columns and [`ROWS`] rows; a mode too small for both keeps a
-/// scale of one. The page is centred in the area inside the margins.
-pub(crate) fn page(mode: PixelSize) -> Page {
+/// The scale is the largest integer that keeps the frame's columns and rows;
+/// a mode too small for both keeps a scale of one. The page is centred in the
+/// area inside the frame's margins.
+pub(crate) fn page(mode: PixelSize, frame: &Frame) -> Page {
     let placement = forms::render::placement(
         (mode.width, mode.height),
         (CELL.width, CELL.height),
-        COLUMNS,
-        ROWS,
-        forms::render::Margins::default(),
+        frame.columns,
+        frame.rows,
+        frame.margins,
     );
     Page {
         origin: Point::new(placement.left as i32, placement.top as i32),
@@ -127,7 +120,7 @@ impl GopDisplay {
     /// Returns the firmware failure when no handle publishes the graphics
     /// output, when the protocol cannot be opened, when the live mode has no
     /// pixel, and when the first copy fails.
-    pub(crate) fn open() -> Result<Self, Error> {
+    pub(crate) fn open(frame: &Frame) -> Result<Self, Error> {
         let handle = boot::get_handle_for_protocol::<GraphicsOutput>()?;
         let mut output = console::open::<GraphicsOutput>(handle)?;
         let info = output.current_mode_info();
@@ -158,7 +151,7 @@ impl GopDisplay {
             // both go through the firmware.
             PixelFormat::Bitmask | PixelFormat::BltOnly => Present::Firmware,
         };
-        let page = page(mode);
+        let page = page(mode, frame);
         let mut display = Self {
             output,
             mode,

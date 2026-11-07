@@ -11,10 +11,10 @@ a `Shell`, then calls `run` or `run_with`.
 - The display is the graphics output when the firmware publishes one. A mode
   without a usable frame buffer, or no graphics output at all, falls back to
   the inherited text console.
-- The page keeps the margins of `forms::render::Margins::default()`, which is one
-  tenth of the display on every edge. On the graphics output it uses the
-  largest integer scale of a 6 by 10 font cell that keeps 40 columns and 16
-  rows.
+- The page keeps the margins of its `Frame` (default one tenth of the display on
+  every edge) and draws with the frame's theme. On the graphics output it uses
+  the largest integer scale of a 6 by 10 font cell that keeps the frame's
+  columns and rows (default 40 by 16).
 - The input is `EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL` when available. The basic
   `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` on the same console handle is the fallback.
   The front end opens one input source, so a key stroke arrives once.
@@ -28,8 +28,9 @@ a `Shell`, then calls `run` or `run_with`.
 
 | Item | Use |
 | --- | --- |
-| `run(session, provider, shell)` | Serve one session with the default key map. |
-| `run_with(session, provider, shell, key_map)` | Serve one session with the key map of the consumer. |
+| `run(session, provider, shell)` | Serve one session in `Frame::default()`. |
+| `run_with(session, provider, shell, &frame)` | Serve one session in the consumer's `Frame`. |
+| `Frame` | The page grid (`columns`, `rows`), the `margins`, the `theme` and the `key_map`. A consumer changes single fields of `Frame::default()`. |
 | `Shell` | Receives `opened` once and `turn` on every turn. |
 | `Turn` | `Continue`, `Redraw` or `End`, as the answer of one turn. |
 | `KeyMap` | `fn(u16, char) -> Option<Input>`: a scan code and a character. |
