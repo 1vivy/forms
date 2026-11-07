@@ -233,6 +233,27 @@ pub enum Drawing {
     Blt,
 }
 
+/// What a caller of [`ask`] does while the modal waits.
+///
+/// A closure `FnMut() -> Turn` is an `Idle` that never reports damage.
+pub trait Idle {
+    /// One turn while the modal waits. [`Turn::End`] ends the wait.
+    fn turn(&mut self) -> Turn;
+
+    /// Whether another owner of the screen wrote over the modal since the
+    /// last turn. The front end then clears the display and draws again. The
+    /// default never reports damage.
+    fn damaged(&mut self) -> bool {
+        false
+    }
+}
+
+impl<F: FnMut() -> Turn> Idle for F {
+    fn turn(&mut self) -> Turn {
+        self()
+    }
+}
+
 /// Shows one modal over an empty page and returns the role that the person
 /// chose.
 ///
@@ -241,13 +262,13 @@ pub enum Drawing {
 /// dismissal answers [`ButtonRole::Cancel`]. `idle` runs once per turn, so a
 /// caller can poll a host interface while the modal waits; [`Turn::End`] from
 /// it ends the wait with `EFI_ABORTED`, so a caller never reads a missing
-/// answer as consent.
+/// answer as consent. Damage that `idle` reports redraws the modal.
 ///
 /// # Errors
 ///
 /// Returns the same failures as [`run_with`], and `EFI_ABORTED` when `idle`
 /// ended the wait before the modal was answered.
-pub fn ask(modal: Modal, frame: &Frame, idle: impl FnMut() -> Turn) -> uefi::Result<ButtonRole> {
+pub fn ask(modal: Modal, frame: &Frame, idle: impl Idle) -> uefi::Result<ButtonRole> {
     let mut session = Session::<()>::new(alloc::vec::Vec::new());
     session.open_modal(modal);
     let mut shell = Ask { idle, answer: None };
@@ -256,12 +277,12 @@ pub fn ask(modal: Modal, frame: &Frame, idle: impl FnMut() -> Turn) -> uefi::Res
 }
 
 /// The shell of [`ask`]: it ends on the modal's answer.
-struct Ask<F> {
-    idle: F,
+struct Ask<I> {
+    idle: I,
     answer: Option<ButtonRole>,
 }
 
-impl<F: FnMut() -> Turn> Shell<(), Empty> for Ask<F> {
+impl<I: Idle> Shell<(), Empty> for Ask<I> {
     fn opened(&mut self, _: &mut Session<()>, _: &mut Empty, _: &Display) {}
 
     fn turn(&mut self, _: &mut Session<()>, _: &mut Empty, _: bool, event: Event) -> Turn {
@@ -272,7 +293,11 @@ impl<F: FnMut() -> Turn> Shell<(), Empty> for Ask<F> {
             });
             return Turn::End;
         }
-        (self.idle)()
+        self.idle.turn()
+    }
+
+    fn damaged(&mut self) -> bool {
+        self.idle.damaged()
     }
 }
 
@@ -512,7 +537,7 @@ where
             }
             dirty = false;
         }
-        let (pressed, event) = match keys.read() {
+        let (pressed, event) = match keys.read()? {
             Some(Some(input)) => (true, session.input(input, provider)),
             Some(None) => (true, Event::None),
             None => (false, Event::None),

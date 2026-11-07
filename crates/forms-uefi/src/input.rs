@@ -159,18 +159,21 @@ impl Keys {
     ///
     /// The outer `Option` tells whether a key arrived. The inner one is its
     /// form input, `None` for a key without a form meaning.
-    pub(crate) fn read(&mut self) -> Option<Option<Input>> {
-        if let Some(extended) = &mut self.extended {
-            return match extended.read_key() {
-                Ok(Some(data)) => Some(key_input(data.key, self.map)),
-                _ => None,
-            };
-        }
-        let basic = self.basic.as_mut()?;
-        match basic.read_key() {
-            Ok(Some(key)) => Some(key_input(key, self.map)),
-            _ => None,
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware failure of the read. A console that cannot be
+    /// read ends the session, so the caller can fall back instead of waiting
+    /// for a key that never arrives.
+    pub(crate) fn read(&mut self) -> Result<Option<Option<Input>>, Error> {
+        let key = if let Some(extended) = &mut self.extended {
+            extended.read_key().map(|data| data.map(|data| data.key))
+        } else if let Some(basic) = &mut self.basic {
+            basic.read_key()
+        } else {
+            Ok(None)
+        };
+        Ok(key?.map(|key| key_input(key, self.map)))
     }
 }
 

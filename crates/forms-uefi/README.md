@@ -32,9 +32,10 @@ a `Shell`, then calls `run` or `run_with`.
 | `run_with(session, provider, shell, &frame)` | Serve one session in the consumer's `Frame`. |
 | `Frame` | The page grid (`columns`, `rows`), the `margins`, the `theme`, the `key_map` and the `drawing` (`Auto` or `Blt`). A consumer changes single fields of `Frame::default()`. |
 | `ask(modal, &frame, idle)` | Show one modal over an empty page and return the chosen `ButtonRole`; Cancel is highlighted first, and an `idle` that ends the wait returns `EFI_ABORTED`. |
+| `Idle` | What `ask` runs on each turn: `turn` answers a `Turn`, and `damaged` reports a screen overwrite so the modal is drawn again. A closure `FnMut() -> Turn` is an `Idle` without damage. |
 | `Display`, `Surface` | What `Shell::opened` receives: graphics (mode and scale) or text, the page cells and the input protocol. Its `Display` text is a one-line description. |
 | `Shell` | Receives `opened` once and `turn` on every turn. `damaged` reports that another owner drew over the screen, so the page is cleared and drawn again; it defaults to never. |
-| `Turn` | `Continue`, `Redraw` or `End`, as the answer of one turn. |
+| `Turn` | `Continue`, `Redraw` or `End`, as the answer of one turn. A console input that fails to read ends the session with that failure. |
 | `KeyMap` | `fn(u16, char) -> Option<Input>`: a scan code and a character. |
 | `map_key` | The default map: a keyboard, and the power key as Enter. |
 | `map_key_phone` | A phone map: the volume keys move, and the right arrow and the power key select. |
