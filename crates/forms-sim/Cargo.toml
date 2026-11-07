@@ -1,0 +1,21 @@
+[package]
+name = "forms-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+demo = ["dep:forms-examples"]
+
+[dependencies]
+forms.workspace = true
+forms-examples = { workspace = true, optional = true }
+mousefood.workspace = true
+ratatui-core.workspace = true
+
+[lints]
+workspace = true

@@ -44,6 +44,7 @@
 
 extern crate alloc;
 
+pub mod page;
 mod popup;
 mod session;
 

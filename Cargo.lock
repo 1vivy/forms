@@ -278,6 +278,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forms-sim"
+version = "0.1.0"
+dependencies = [
+ "forms",
+ "forms-examples",
+ "mousefood",
+ "ratatui-core",
+]
+
+[[package]]
 name = "forms-uefi"
 version = "0.1.0"
 dependencies = [

@@ -23,6 +23,7 @@ front end. The `hii-*` crates are optional HII adapters.
 | `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
 | `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup`, with `popup::ask` as its consumer | UEFI targets, host build for the producer and popup tests |
 | `forms-examples` | teaching | Compiled example programs and the `Provider` behind them: a templated formset over typed settings, a popup, and action requests | host |
+| `forms-sim` | front end | Browser front end: the real widget drawn into a panel framebuffer, with a demo page over `forms-examples` | host and `wasm32-unknown-unknown` |
 
 The crate is one unit because the parts are useless apart: a session without a
 model has nothing to navigate, and a widget without a view has nothing to draw.

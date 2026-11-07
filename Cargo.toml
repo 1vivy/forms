@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/forms",
     "crates/forms-examples",
+    "crates/forms-sim",
     "crates/forms-uefi",
     "crates/hii-abi",
     "crates/hii-ifr",
@@ -17,6 +18,7 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 forms = { path = "crates/forms" }
+forms-examples = { path = "crates/forms-examples" }
 forms-uefi = { path = "crates/forms-uefi" }
 hii-abi = { path = "crates/hii-abi" }
 hii-ifr = { path = "crates/hii-ifr" }
