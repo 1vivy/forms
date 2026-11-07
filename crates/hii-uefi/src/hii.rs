@@ -374,10 +374,9 @@ impl HiiProvider {
     /// Returns the question of one row.
     fn question(&self, handle: HiiHandleId, row: &Row) -> Result<hii_ifr::QuestionRef, Error> {
         let entry = self.entry(handle)?;
-        let key = row.binding.unwrap_or(row.key);
         entry
             .export
-            .question(key)
+            .question_of_row(row.key)
             .cloned()
             .ok_or_else(|| Self::error(Status::NOT_FOUND, "the set declares no such question"))
     }

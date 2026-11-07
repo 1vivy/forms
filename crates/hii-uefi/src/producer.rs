@@ -84,8 +84,10 @@ impl From<EncodeError> for ConfigError {
 /// One value question and its slice of the buffer store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
-    /// The row of the question.
+    /// The row key of the question.
     pub row: Key,
+    /// The value key that the row binds.
+    pub binding: Key,
     /// The byte offset in the store.
     pub offset: u16,
     /// The block width in bytes.
@@ -182,6 +184,7 @@ impl PreparedFormSet {
             .filter_map(|question| match question.storage {
                 Storage::Offset { offset, .. } => Some(Range {
                     row: question.row,
+                    binding: question.binding,
                     offset,
                     width: question.bytes,
                 }),
@@ -363,13 +366,10 @@ impl PreparedFormSet {
         Ok(request)
     }
 
-    /// Returns the row of a question, by its row key or its binding.
+    /// Returns the row of a question, by its row key.
     fn row(&self, key: Key) -> Result<&Row, ConfigError> {
         self.set
-            .pages
-            .iter()
-            .flat_map(|page| &page.rows)
-            .find(|row| row.key == key || row.binding == Some(key))
+            .row(key)
             .ok_or_else(|| ConfigError::new(Status::NOT_FOUND, 0))
     }
 
@@ -505,4 +505,60 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
         out.push((high * 16 + low) as u8);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PreparedFormSet;
+    use alloc::format;
+    use alloc::vec;
+    use forms::{Builder, Control, Key, MemoryProvider, Value};
+
+    /// A binding that equals another row key must not move a value.
+    #[test]
+    fn a_binding_that_equals_another_row_key_does_not_collide() {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page("Main");
+        for index in 0..12u64 {
+            let binding = if index == 7 {
+                // Row key 7 belongs to row 5, which comes first.
+                Key(7)
+            } else {
+                Key(100 + index)
+            };
+            let row = builder.row(
+                format!("Row {index}"),
+                Control::Number {
+                    minimum: 0,
+                    maximum: 255,
+                    step: 1,
+                },
+            );
+            row.set_binding(binding);
+        }
+        let set = builder.build();
+        let prepared = PreparedFormSet::new(set.clone(), [0u8; 16]).expect("prepared");
+        let mut provider = MemoryProvider::new(vec![(0u8, set)]);
+        for index in 0..12u64 {
+            let binding = if index == 7 { Key(7) } else { Key(100 + index) };
+            let value = if index == 7 { 5 } else { index + 1 };
+            provider.set(binding, Value::Number(value));
+        }
+        provider.set(Key(105), Value::Number(9));
+
+        let answer = prepared
+            .extract(&mut provider, 0, None, &[])
+            .expect("the answer is built");
+        let blocks = hii_ifr::config::parse_blocks(&answer).expect("the blocks parse");
+        let range = prepared
+            .ranges()
+            .into_iter()
+            .find(|range| range.binding == Key(7))
+            .expect("the row that binds key 7");
+        let block = blocks
+            .iter()
+            .find(|block| block.offset == range.offset)
+            .expect("the block of that row");
+        assert_eq!(block.bytes, vec![5]);
+    }
 }

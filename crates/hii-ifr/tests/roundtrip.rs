@@ -260,6 +260,26 @@ fn an_ordered_list_keeps_its_values_and_limit() {
 }
 
 #[test]
+fn a_question_keeps_its_row_and_its_binding() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder.row("Mode", Control::Toggle).set_binding(Key(10));
+    let set = builder.build();
+    let export = descriptor(&set, [0x11; 16]);
+    let row = set.pages[0].rows[0].key;
+    assert_eq!(export.questions[0].row, row);
+    assert_eq!(export.questions[0].binding, Key(10));
+    assert_eq!(
+        export.question(Key(10)).map(|question| question.row),
+        Some(row)
+    );
+    assert_eq!(
+        export.question_of_row(row).map(|question| question.binding),
+        Some(Key(10))
+    );
+}
+
+#[test]
 fn question_flags_round_trip() {
     let mut builder = Builder::new(Key(1), "S");
     builder.page("Main");

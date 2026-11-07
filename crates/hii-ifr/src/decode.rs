@@ -369,6 +369,7 @@ fn questions_of(set: &FormSet, decoding: &Decoding) -> Vec<QuestionRef> {
             };
             questions.push(QuestionRef {
                 row: row.key,
+                binding: row.binding.unwrap_or(row.key),
                 question: *id,
                 storage: decoding.storage.get(id).cloned().unwrap_or(Storage::None),
                 bytes,

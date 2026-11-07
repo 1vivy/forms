@@ -112,6 +112,8 @@ pub enum QuestionKind {
 pub struct QuestionRef {
     /// The row key.
     pub row: Key,
+    /// The value key that the row binds.
+    pub binding: Key,
     /// The question identifier.
     pub question: u16,
     /// The storage location.
@@ -198,7 +200,30 @@ impl Export {
     /// };
     /// assert!(export.question(forms::Key(1)).is_none());
     /// ```
-    pub fn question(&self, row: Key) -> Option<&QuestionRef> {
+    pub fn question(&self, binding: Key) -> Option<&QuestionRef> {
+        self.questions
+            .iter()
+            .find(|question| question.binding == binding)
+    }
+
+    /// Returns the question of one row, by its row key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hii_ifr::Export;
+    ///
+    /// let export = Export {
+    ///     guid: [0; 16],
+    ///     class_guids: Vec::new(),
+    ///     varstores: Vec::new(),
+    ///     forms: Vec::new(),
+    ///     questions: Vec::new(),
+    ///     refresh_events: Vec::new(),
+    /// };
+    /// assert!(export.question_of_row(forms::Key(1)).is_none());
+    /// ```
+    pub fn question_of_row(&self, row: Key) -> Option<&QuestionRef> {
         self.questions.iter().find(|question| question.row == row)
     }
 
@@ -328,7 +353,8 @@ pub fn descriptor(set: &FormSet, guid: Guid) -> Export {
                 }
                 Control::Action => {
                     questions.push(QuestionRef {
-                        row: row.binding.unwrap_or(row.key),
+                        row: row.key,
+                        binding: row.binding.unwrap_or(row.key),
                         question: next,
                         storage: Storage::None,
                         bytes: 0,
@@ -341,7 +367,8 @@ pub fn descriptor(set: &FormSet, guid: Guid) -> Export {
                 _ => continue,
             };
             questions.push(QuestionRef {
-                row: row.binding.unwrap_or(row.key),
+                row: row.key,
+                binding: row.binding.unwrap_or(row.key),
                 question: next,
                 storage: Storage::Offset { store: 1, offset },
                 bytes,
