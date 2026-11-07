@@ -95,17 +95,36 @@ impl Builder {
         FieldBinding::new(self.key())
     }
 
-    /// Starts a page with an allocated key.
+    /// Starts a page with an allocated key and returns that key.
     ///
     /// # Examples
     ///
     /// ```
     /// let mut builder = forms::Builder::new(forms::Key(1), "P");
-    /// builder.page("Main");
-    /// assert_eq!(builder.build().pages[0].title, "Main");
+    /// let main = builder.page("Main");
+    /// assert_eq!(builder.build().pages[0].key, main);
     /// ```
-    pub fn page(&mut self, title: impl Into<String>) {
+    pub fn page(&mut self, title: impl Into<String>) -> Key {
         let key = self.key();
+        self.page_with(key, title);
+        key
+    }
+
+    /// Starts a page with a key that the caller allocated earlier, so a link
+    /// written before the page names it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut builder = forms::Builder::new(forms::Key(1), "P");
+    /// let advanced = builder.key();
+    /// builder.page("Main");
+    /// builder.link("Advanced", advanced);
+    /// builder.page_with(advanced, "Advanced");
+    /// let set = builder.build();
+    /// assert_eq!(set.pages[1].key, advanced);
+    /// ```
+    pub fn page_with(&mut self, key: Key, title: impl Into<String>) {
         self.pages.push(Page {
             key,
             title: title.into(),
@@ -148,11 +167,12 @@ impl Builder {
     /// use forms::{Builder, Key};
     ///
     /// let mut builder = Builder::new(Key(1), "P");
+    /// let advanced = builder.key();
     /// builder.page("Main");
-    /// let other = builder.key();
-    /// builder.link("Advanced", other);
-    /// builder.page("Advanced");
-    /// assert!(builder.build().pages[0].rows[0].control.target().is_some());
+    /// builder.link("Advanced", advanced);
+    /// builder.page_with(advanced, "Advanced");
+    /// let set = builder.build();
+    /// assert_eq!(set.pages[0].rows[0].control.target().map(|target| target.page), Some(set.pages[1].key));
     /// ```
     pub fn link(&mut self, label: impl Into<String>, page: Key) -> &mut Row {
         self.row(label, Control::Link(Target::page(page)))

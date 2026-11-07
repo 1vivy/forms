@@ -928,9 +928,14 @@ impl<H: Copy + Eq> Session<H> {
                 self.message = Some(error.reason.clone());
                 return Event::Failed(error);
             }
-            if let Some(page) = self.pages.last_mut() {
-                page.page = target.page;
-                page.selected = target.row.unwrap_or_default();
+            // A link opens its page on top of the current one, so Back returns
+            // to the row that linked, as a browser does with a goto.
+            if let Some(current) = self.pages.last().copied() {
+                self.pages.push(StackPage {
+                    page: target.page,
+                    selected: target.row.unwrap_or_default(),
+                    ..current
+                });
             }
             self.message = None;
             return Event::Changed;
@@ -1541,6 +1546,30 @@ mod tests {
             Event::Response(Request::None)
         );
         assert_eq!(provider.store.read(Key(14)), Ok(Value::Number(2)));
+    }
+
+    /// A link pushes its page; Back returns to the linking page with the link
+    /// row still selected.
+    #[test]
+    fn a_link_nests_and_back_returns_to_the_linking_row() {
+        let mut builder = Builder::new(Key(1), "S");
+        let inner = builder.key();
+        builder.page("Main");
+        builder.row("A", Control::Toggle).set_binding(Key(30));
+        let link = builder.link("Inner", inner).key;
+        builder.page_with(inner, "Inner");
+        builder.row("B", Control::Toggle).set_binding(Key(31));
+        let set = builder.build();
+        let mut provider = provider_of(&set);
+        let mut session = Session::new(vec![(0u8, set.clone())]);
+        assert!(session.enter(Key(1)));
+        session.input(Input::Down, &mut provider);
+        assert_eq!(session.input(Input::Enter, &mut provider), Event::Changed);
+        assert_eq!(session.view(&mut provider).title, "Inner");
+        assert_eq!(session.input(Input::Back, &mut provider), Event::Changed);
+        let view = session.view(&mut provider);
+        assert_eq!(view.title, "Main");
+        assert_eq!(view.selected.map(|index| view.rows[index].key), Some(link));
     }
 
     /// Steps a number with Up and Down within its bounds.
