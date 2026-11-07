@@ -321,7 +321,11 @@ where
         };
         if matches!(
             event,
-            Event::Changed | Event::Failed(_) | Event::Response(_) | Event::Popup(_)
+            Event::Changed
+                | Event::Failed(_)
+                | Event::Response(_)
+                | Event::Modal(_)
+                | Event::Warning(_)
         ) {
             dirty = true;
         }

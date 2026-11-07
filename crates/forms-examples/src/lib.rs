@@ -1,563 +1,412 @@
-//! Small compiled examples of the [`forms`] engine.
+//! Small compiled examples of the [`forms`] crate.
 //!
-//! This crate is a teaching companion to [`forms`], not a library for a
-//! product. The programs under `examples` show the four parts that a front end
-//! has to join: a templated formset, a [`Provider`] over typed settings, a
-//! modal popup, and the handling of [`ActionRequest`]. The compiler checks
-//! every example on each gate, so the code that the documentation shows is the
-//! code that builds.
+//! This crate is a teaching companion, not a product library. It shows the
+//! four parts that a front end joins: a form set built from one template
+//! table, a provider over typed settings, a modal decision, and the handling
+//! of a [`Request`]. The compiler checks every example on each gate.
 //!
-//! The lessons, in order:
+//! The lessons:
 //!
-//! 1. A template table ([`FIELDS`] and [`ACTIONS`]) declares the formset with
-//!    [`formset`], and the same table maps a question identifier to one typed
-//!    field of [`Settings`]. One list is the only authority, so a new setting
-//!    reaches the page and the provider together.
-//! 2. [`SettingsProvider`] owns every value. The session owns navigation
-//!    only, so a front end never keeps a copy of a value.
-//! 3. [`Session::open_popup`](forms::Session::open_popup) shows a modal
-//!    decision over the running page, and the person answers it through the
-//!    page input. A front end acts on [`Event::Popup`](forms::Event::Popup).
-//! 4. A provider answers a change or an action with a request. The session
-//!    acts on it before it returns [`Event::Response`](forms::Event::Response),
-//!    so a front end only has to obey [`ActionRequest::Reset`] itself.
-//!
-//! The crate is `no_std` with `alloc`, as the engine is, so the same provider
-//! works in a UEFI image and in a Linux program.
+//! 1. One table ([`FIELDS`]) declares the page and the mapping from a value
+//!    key to one typed field of [`Settings`], so a new setting reaches both
+//!    together.
+//! 2. [`SettingsProvider`] owns every value. The session owns navigation only.
+//! 3. [`forms::Session::open_modal`] shows a decision over the running page,
+//!    and the front end acts on [`forms::Event::Modal`].
+//! 4. A provider returns a [`Request`]. The session acts on it before it
+//!    returns [`forms::Event::Response`], so a front end only obeys a restart.
 //!
 //! # Examples
 //!
 //! ```
 //! let set = forms_examples::formset();
-//! assert_eq!(set.forms.first().map(|form| form.id), Some(forms_examples::FORM));
+//! assert_eq!(set.pages[0].rows.len(), 8);
 //! ```
-
 #![no_std]
 
 extern crate alloc;
 
 use alloc::{
+    format,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
-use forms::{
-    ActionRequest, Choice, Error, Form, FormId, FormSet, Guid, Provider, Question, QuestionFlags,
-    QuestionId, Scope, Statement, Storage, Value, Width,
-};
 
-/// The GUID of the example formset.
-pub const SET_GUID: Guid = [0x5e; 16];
+use forms::{Builder, Choice, Control, Error, FormSet, Key, Provider, Request, Row, Scope, Value};
 
-/// The handle that [`SettingsProvider`] uses for its formset.
+/// The handle that [`SettingsProvider`] uses for its form set.
 pub const HANDLE: u8 = 1;
 
-/// The identifier of the only form of the formset.
-pub const FORM: FormId = FormId(1);
+/// The provider does not know the field.
+pub const UNKNOWN_FIELD: u64 = 1;
 
-/// The provider does not know the question.
-pub const UNKNOWN_QUESTION: u64 = 1;
-
-/// The value has the wrong type for the question.
+/// The value has the wrong type for the field.
 pub const WRONG_TYPE: u64 = 2;
 
-/// The value is outside the range of the question.
+/// The value is outside the range of the field.
 pub const OUT_OF_RANGE: u64 = 3;
 
-/// One row of the value part of the template.
+/// The value key of the secure boot field.
+pub const SECURE_BOOT: Key = Key(10);
+/// The value key of the mode field.
+pub const MODE: Key = Key(11);
+/// The value key of the core count field.
+pub const CORES: Key = Key(12);
+/// The value key of the name field.
+pub const NAME: Key = Key(13);
+/// The value key of the timeout field.
+pub const TIMEOUT: Key = Key(14);
+/// The default set that the restore row writes.
+pub const FACTORY: Key = Key(40);
+
+/// The typed setting behind one row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Field {
-    /// The question identifier.
-    pub question: QuestionId,
-    /// The prompt of the row.
-    pub prompt: &'static str,
-    /// The help text of the row.
-    pub help: &'static str,
-    /// The part of [`Settings`] that holds the value.
-    pub kind: Kind,
+pub enum Setting {
+    /// Whether secure boot is on.
+    SecureBoot,
+    /// The boot mode.
+    Mode,
+    /// The number of cores.
+    Cores,
+    /// The machine name.
+    Name,
+    /// How long the boot menu waits, in seconds.
+    Timeout,
+    /// The command that applies the settings.
+    Apply,
 }
 
-/// The statement of one [`Field`].
+impl Setting {
+    /// Returns the value key of the setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(forms_examples::Setting::Timeout.key(), forms_examples::TIMEOUT);
+    /// ```
+    pub const fn key(self) -> Key {
+        match self {
+            Self::SecureBoot => SECURE_BOOT,
+            Self::Mode => MODE,
+            Self::Cores => CORES,
+            Self::Name => NAME,
+            Self::Timeout => TIMEOUT,
+            Self::Apply => Key(20),
+        }
+    }
+}
+
+/// The typed settings of the example.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// Whether secure boot is on.
+    pub secure_boot: bool,
+    /// The boot mode: 1 for fast, 2 for safe.
+    pub mode: u64,
+    /// The number of cores.
+    pub cores: u64,
+    /// The machine name.
+    pub name: String,
+    /// How long the boot menu waits, in seconds.
+    pub timeout: u64,
+    /// How often the apply command ran.
+    pub applied: u32,
+}
+
+/// The control of one [`FieldSpec`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// A boolean question.
-    Toggle {
-        /// The default value.
-        default: bool,
-    },
-    /// A choice among listed values.
-    Choice(&'static [ChoiceSpec]),
+pub enum ControlSpec {
+    /// A logical switch.
+    Toggle,
+    /// A choice between two modes.
+    Mode,
     /// A bounded number.
-    Number {
-        /// The stored width of the value.
-        width: Width,
-        /// The smallest accepted value.
-        minimum: u64,
-        /// The largest accepted value.
-        maximum: u64,
-        /// The increment.
-        step: u64,
-    },
-    /// A bounded text value.
-    Text {
-        /// The smallest accepted length in characters.
-        minimum: u8,
-        /// The largest accepted length in characters.
-        maximum: u8,
-    },
+    Cores,
+    /// A bounded text.
+    Name,
+    /// A bounded number that two keys adjust.
+    Timeout,
+    /// A command.
+    Action,
 }
 
-/// One choice of a [`Kind::Choice`] field.
+/// One row of the template.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChoiceSpec {
-    /// The choice text.
-    pub text: &'static str,
-    /// The stored value.
-    pub value: u64,
-    /// This choice is the default.
-    pub default: bool,
-}
-
-/// One action row of the template.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ActionSpec {
-    /// The question identifier.
-    pub question: QuestionId,
-    /// The prompt of the row.
-    pub prompt: &'static str,
+pub struct FieldSpec {
+    /// The typed field.
+    pub setting: Setting,
+    /// The label of the row.
+    pub label: &'static str,
     /// The help text of the row.
     pub help: &'static str,
-    /// The request that the provider returns.
-    pub request: ActionRequest,
+    /// The control of the row.
+    pub control: ControlSpec,
 }
 
-/// The value part of the template: the questions that hold a setting.
-pub const FIELDS: &[Field] = &[
-    Field {
-        question: QuestionId(1),
-        prompt: "Night mode",
-        help: "Use the dark palette.",
-        kind: Kind::Toggle { default: false },
+/// Every row of the example page.
+///
+/// This table is the only authority for the page and for the provider.
+pub const FIELDS: [FieldSpec; 6] = [
+    FieldSpec {
+        setting: Setting::SecureBoot,
+        label: "Secure boot",
+        help: "Verify the boot loader signature.",
+        control: ControlSpec::Toggle,
     },
-    Field {
-        question: QuestionId(2),
-        prompt: "Scale",
-        help: "Interface scale.",
-        kind: Kind::Choice(&[
-            ChoiceSpec {
-                text: "100%",
-                value: 100,
-                default: true,
-            },
-            ChoiceSpec {
-                text: "150%",
-                value: 150,
-                default: false,
-            },
-            ChoiceSpec {
-                text: "200%",
-                value: 200,
-                default: false,
-            },
-        ]),
+    FieldSpec {
+        setting: Setting::Mode,
+        label: "Boot mode",
+        help: "Trade boot time for recovery options.",
+        control: ControlSpec::Mode,
     },
-    Field {
-        question: QuestionId(3),
-        prompt: "Brightness",
-        help: "Backlight level.",
-        kind: Kind::Number {
-            width: Width::U8,
-            minimum: 0,
-            maximum: 100,
-            step: 5,
-        },
+    FieldSpec {
+        setting: Setting::Cores,
+        label: "Cores",
+        help: "The number of cores that the payload starts.",
+        control: ControlSpec::Cores,
     },
-    Field {
-        question: QuestionId(4),
-        prompt: "Device name",
-        help: "Name that the device shows.",
-        kind: Kind::Text {
-            minimum: 1,
-            maximum: 12,
-        },
+    FieldSpec {
+        setting: Setting::Name,
+        label: "Machine name",
+        help: "The name that the payload receives.",
+        control: ControlSpec::Name,
+    },
+    FieldSpec {
+        setting: Setting::Timeout,
+        label: "Menu timeout",
+        help: "How long the boot menu waits. Zero waits forever.",
+        control: ControlSpec::Timeout,
+    },
+    FieldSpec {
+        setting: Setting::Apply,
+        label: "Apply settings",
+        help: "Write the changed values.",
+        control: ControlSpec::Action,
     },
 ];
 
-/// The action part of the template: the rows that ask for a request.
+/// Returns the setting of a value key.
 ///
-/// Each row shows one request that a provider can return, so the page tests
-/// the three requests that a settings page normally needs: reset, submit and
-/// exit.
-pub const ACTIONS: &[ActionSpec] = &[
-    ActionSpec {
-        question: QuestionId(5),
-        prompt: "Reset to defaults",
-        help: "Forget the changes and restart.",
-        request: ActionRequest::Reset,
-    },
-    ActionSpec {
-        question: QuestionId(6),
-        prompt: "Save and exit",
-        help: "Commit every change and leave the page.",
-        request: ActionRequest::Submit,
-    },
-    ActionSpec {
-        question: QuestionId(7),
-        prompt: "Exit without saving",
-        help: "Discard every change and leave the page.",
-        request: ActionRequest::Exit,
-    },
-];
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     forms_examples::setting_of(forms_examples::NAME),
+///     Some(forms_examples::Setting::Name)
+/// );
+/// assert!(forms_examples::setting_of(forms::Key(99)).is_none());
+/// ```
+pub fn setting_of(key: Key) -> Option<Setting> {
+    FIELDS
+        .iter()
+        .map(|field| field.setting)
+        .find(|setting| setting.key() == key)
+}
 
-/// Builds the formset from the template.
-///
-/// The formset has one form. Its value rows come from [`FIELDS`] in order, and
-/// its action rows come from [`ACTIONS`] in order.
+/// Builds the example form set from [`FIELDS`].
 ///
 /// # Examples
 ///
 /// ```
 /// let set = forms_examples::formset();
-/// let form = set.form(forms_examples::FORM).expect("the formset has its form");
-/// let questions = form
-///     .items
-///     .iter()
-///     .filter(|item| item.statement.question().is_some())
-///     .count();
-/// assert_eq!(questions, forms_examples::FIELDS.len() + forms_examples::ACTIONS.len());
+/// assert_eq!(set.title, "Platform");
+/// assert_eq!(set.pages[0].rows.len(), 8);
 /// ```
-#[must_use]
 pub fn formset() -> FormSet {
-    let mut items: Vec<forms::Item> = vec![
-        Statement::Subtitle {
-            text: "Display".into(),
-        }
-        .into(),
-    ];
+    let mut builder = Builder::new(Key(1), "Platform").help("Recovery settings");
+    builder.page("Boot");
+    builder.row("Settings", Control::Heading);
     for field in FIELDS {
-        items.push(statement(field));
-    }
-    items.push(
-        Statement::Text {
-            prompt: "Provider".into(),
-            help: "Where the values live.".into(),
-            value: "in memory".into(),
+        let control = match field.control {
+            ControlSpec::Toggle => Control::Toggle,
+            ControlSpec::Mode => {
+                Control::Choice(vec![Choice::new("Fast", 1), Choice::new("Safe", 2)])
+            }
+            ControlSpec::Cores => Control::Number {
+                minimum: 1,
+                maximum: 64,
+                step: 1,
+            },
+            ControlSpec::Name => Control::TextInput {
+                minimum: 1,
+                maximum: 16,
+                secret: false,
+            },
+            ControlSpec::Timeout => Control::Slider {
+                minimum: 0,
+                maximum: 10,
+                step: 1,
+                unit: String::from("s"),
+                labels: vec![Choice::new("Off", 0)],
+            },
+            ControlSpec::Action => Control::Action,
+        };
+        let row = builder.row(field.label, control);
+        row.set_help(field.help);
+        if field.control != ControlSpec::Action {
+            row.set_binding(field.setting.key());
         }
-        .into(),
+    }
+    builder.row("Restore defaults", Control::Reset(FACTORY));
+    builder.row(
+        "Progress",
+        Control::Progress {
+            current: 1,
+            total: Some(4),
+        },
     );
-    items.push(
-        Statement::Subtitle {
-            text: "Actions".into(),
-        }
-        .into(),
+    builder.row("Separator", Control::Divider);
+    builder.defaults(
+        FACTORY,
+        "Factory",
+        [
+            (SECURE_BOOT, Value::Bool(false)),
+            (MODE, Value::Number(2)),
+            (CORES, Value::Number(4)),
+            (TIMEOUT, Value::Number(5)),
+        ],
     );
-    for action in ACTIONS {
-        items.push(
-            Statement::Action {
-                question: Question {
-                    id: action.question,
-                    prompt: action.prompt.into(),
-                    help: action.help.into(),
-                    storage: Storage::None,
-                    flags: QuestionFlags::CALLBACK,
-                },
-            }
-            .into(),
-        );
-    }
-    FormSet {
-        guid: SET_GUID,
-        title: "Example".into(),
-        help: "A templated formset over typed settings.".into(),
-        class_guids: Vec::new(),
-        varstores: Vec::new(),
-        forms: vec![Form {
-            id: FORM,
-            title: "Example".into(),
-            items,
-        }],
-    }
+    builder.build()
 }
 
-/// Builds the statement of one field.
-fn statement(field: &Field) -> forms::Item {
-    let question = Question {
-        id: field.question,
-        prompt: field.prompt.into(),
-        help: field.help.into(),
-        storage: Storage::None,
-        flags: QuestionFlags::default(),
-    };
-    let statement = match field.kind {
-        Kind::Toggle { default } => Statement::Checkbox { question, default },
-        Kind::Choice(choices) => Statement::OneOf {
-            question,
-            width: Width::U16,
-            choices: choices.iter().map(choice).collect(),
-        },
-        Kind::Number {
-            width,
-            minimum,
-            maximum,
-            step,
-        } => Statement::Numeric {
-            question,
-            width,
-            minimum,
-            maximum,
-            step,
-        },
-        Kind::Text { minimum, maximum } => Statement::TextInput {
-            question,
-            minimum,
-            maximum,
-        },
-    };
-    statement.into()
-}
-
-/// Copies one template choice into a model choice.
-fn choice(spec: &ChoiceSpec) -> Choice {
-    Choice {
-        text: spec.text.into(),
-        value: spec.value,
-        default: spec.default,
-    }
-}
-
-/// The typed settings behind the example formset.
+/// Reads one value of the typed settings.
 ///
-/// The provider keeps two copies: the draft that the page edits, and the
-/// committed copy that a discard restores. A product replaces this struct with
-/// its own facts and keeps the same shape.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Settings {
-    /// Whether the dark palette is active.
-    pub night_mode: bool,
-    /// The interface scale.
-    pub scale: Scale,
-    /// The backlight level, 0 to 100.
-    pub brightness: u8,
-    /// The device name, 1 to 12 characters.
-    pub name: String,
-}
-
-impl Settings {
-    /// Returns the values that the template declares as the defaults.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let settings = forms_examples::Settings::defaults();
-    /// assert_eq!(settings.scale, forms_examples::Scale::Percent100);
-    /// assert!(!settings.night_mode);
-    /// ```
-    #[must_use]
-    pub fn defaults() -> Self {
-        Self {
-            night_mode: false,
-            scale: Scale::Percent100,
-            brightness: 50,
-            name: "opq".into(),
-        }
-    }
-
-    /// Returns the value of one question.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UNKNOWN_QUESTION`] when the identifier is not a value row of
-    /// [`FIELDS`].
-    pub fn value(&self, id: QuestionId) -> Result<Value, Error> {
-        Ok(match id.0 {
-            1 => Value::Bool(self.night_mode),
-            2 => Value::Number(self.scale.value()),
-            3 => Value::Number(u64::from(self.brightness)),
-            4 => Value::Text(self.name.clone()),
-            _ => return Err(error(UNKNOWN_QUESTION, "the question holds no setting")),
-        })
-    }
-
-    /// Stores the value of one question.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UNKNOWN_QUESTION`] for an action row, [`WRONG_TYPE`] for a
-    /// value of the wrong type, and [`OUT_OF_RANGE`] for a value that the
-    /// template does not offer.
-    pub fn set(&mut self, id: QuestionId, value: &Value) -> Result<(), Error> {
-        match (id.0, value) {
-            (1, Value::Bool(on)) => self.night_mode = *on,
-            (2, Value::Number(number)) => {
-                let scale = Scale::from_value(*number)
-                    .ok_or_else(|| error(OUT_OF_RANGE, "the scale is not one of the choices"))?;
-                self.scale = scale;
-            }
-            (3, Value::Number(number)) => {
-                let level = u8::try_from(*number)
-                    .ok()
-                    .filter(|level| *level <= 100)
-                    .ok_or_else(|| error(OUT_OF_RANGE, "the brightness is above 100"))?;
-                self.brightness = level;
-            }
-            (4, Value::Text(text)) => {
-                if text.is_empty() || text.chars().count() > 12 {
-                    return Err(error(OUT_OF_RANGE, "the name is 1 to 12 characters"));
-                }
-                self.name.clone_from(text);
-            }
-            (1..=4, _) => return Err(error(WRONG_TYPE, "the value has the wrong type")),
-            _ => return Err(error(UNKNOWN_QUESTION, "the question holds no setting")),
-        }
-        Ok(())
-    }
-
-    /// Copies one question value from another settings record.
-    ///
-    /// The provider uses this method for [`Scope::Question`]. A scope with more
-    /// rows copies each row through it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same failure as [`Settings::value`] and [`Settings::set`].
-    pub fn copy_field(&mut self, from: &Self, id: QuestionId) -> Result<(), Error> {
-        let value = from.value(id)?;
-        self.set(id, &value)
-    }
-}
-
-/// The interface scale that the choice row offers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u64)]
-pub enum Scale {
-    /// 100 percent.
-    Percent100 = 100,
-    /// 150 percent.
-    Percent150 = 150,
-    /// 200 percent.
-    Percent200 = 200,
-}
-
-impl Scale {
-    /// Returns the stored number of this scale.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// assert_eq!(forms_examples::Scale::Percent150.value(), 150);
-    /// ```
-    #[must_use]
-    pub const fn value(self) -> u64 {
-        self as u64
-    }
-
-    /// Returns the scale of a stored number.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use forms_examples::Scale;
-    ///
-    /// assert_eq!(Scale::from_value(200), Some(Scale::Percent200));
-    /// assert_eq!(Scale::from_value(120), None);
-    /// ```
-    #[must_use]
-    pub const fn from_value(value: u64) -> Option<Self> {
-        match value {
-            100 => Some(Self::Percent100),
-            150 => Some(Self::Percent150),
-            200 => Some(Self::Percent200),
-            _ => None,
-        }
-    }
-}
-
-/// A provider over [`Settings`].
+/// # Errors
 ///
-/// The provider owns the draft and the committed copy. It records every
-/// request that it returns, so a front end can log or grade the exchange
-/// without a second authority.
+/// Returns [`UNKNOWN_FIELD`] for a key that no field uses.
 ///
 /// # Examples
 ///
 /// ```
-/// use forms::Provider;
-/// use forms_examples::SettingsProvider;
+/// use forms::{Key, Value};
 ///
-/// let mut provider = SettingsProvider::new();
-/// let sets = provider.formsets().expect("the list is readable");
-/// assert_eq!(sets.len(), 1);
+/// let settings = forms_examples::Settings::default();
+/// assert_eq!(
+///     forms_examples::value_of(&settings, forms_examples::Setting::Mode),
+///     Value::Number(0)
+/// );
 /// ```
-pub struct SettingsProvider {
-    draft: Settings,
-    committed: Settings,
-    requests: Vec<ActionRequest>,
+pub fn value_of(settings: &Settings, setting: Setting) -> Value {
+    match setting {
+        Setting::SecureBoot => Value::Bool(settings.secure_boot),
+        Setting::Mode => Value::Number(settings.mode),
+        Setting::Cores => Value::Number(settings.cores),
+        Setting::Name => Value::Text(settings.name.clone()),
+        Setting::Timeout => Value::Number(settings.timeout),
+        Setting::Apply => Value::Bytes(Vec::new()),
+    }
 }
 
-impl SettingsProvider {
-    /// Creates a provider over the default settings.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let provider = forms_examples::SettingsProvider::new();
-    /// assert_eq!(provider.draft(), provider.committed());
-    /// ```
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_settings(Settings::defaults())
-    }
-
-    /// Creates a provider over `settings`.
-    ///
-    /// The draft and the committed copy start with the same values.
-    #[must_use]
-    pub fn with_settings(settings: Settings) -> Self {
-        Self {
-            draft: settings.clone(),
-            committed: settings,
-            requests: Vec::new(),
+/// Writes one value into the typed settings.
+///
+/// # Errors
+///
+/// Returns [`WRONG_TYPE`] for a value of another type and [`OUT_OF_RANGE`]
+/// for a value outside the range of its control.
+///
+/// # Examples
+///
+/// ```
+/// use forms::{Key, Value};
+///
+/// let mut settings = forms_examples::Settings::default();
+/// forms_examples::write_setting(&mut settings, forms_examples::Key(11), &Value::Number(1)).unwrap();
+/// assert_eq!(settings.mode, 1);
+/// ```
+pub fn write_setting(settings: &mut Settings, key: Key, value: &Value) -> Result<(), Error> {
+    let Some(setting) = setting_of(key) else {
+        return Err(Error {
+            code: UNKNOWN_FIELD,
+            reason: String::from("No field has this key"),
+        });
+    };
+    let number = |value: &Value| match value {
+        Value::Number(number) => Ok(*number),
+        _ => Err(Error {
+            code: WRONG_TYPE,
+            reason: String::from("The field takes a number"),
+        }),
+    };
+    match setting {
+        Setting::SecureBoot => match value {
+            Value::Bool(flag) => settings.secure_boot = *flag,
+            _ => {
+                return Err(Error {
+                    code: WRONG_TYPE,
+                    reason: String::from("The field takes a logical value"),
+                });
+            }
+        },
+        Setting::Mode => {
+            let mode = number(value)?;
+            if !(1..=2).contains(&mode) {
+                return Err(out_of_range("Mode", 1, 2));
+            }
+            settings.mode = mode;
+        }
+        Setting::Cores => {
+            let cores = number(value)?;
+            if !(1..=64).contains(&cores) {
+                return Err(out_of_range("Cores", 1, 64));
+            }
+            settings.cores = cores;
+        }
+        Setting::Name => match value {
+            Value::Text(text) => {
+                if text.chars().count() > 16 {
+                    return Err(out_of_range("Machine name", 0, 16));
+                }
+                settings.name = text.clone();
+            }
+            _ => {
+                return Err(Error {
+                    code: WRONG_TYPE,
+                    reason: String::from("The field takes text"),
+                });
+            }
+        },
+        Setting::Timeout => {
+            let timeout = number(value)?;
+            if timeout > 10 {
+                return Err(out_of_range("Menu timeout", 0, 10));
+            }
+            settings.timeout = timeout;
+        }
+        Setting::Apply => {
+            settings.applied = settings.applied.saturating_add(1);
         }
     }
+    Ok(())
+}
 
-    /// Returns the values as the page sees them.
-    #[must_use]
-    pub fn draft(&self) -> &Settings {
-        &self.draft
+/// Builds a range error.
+fn out_of_range(label: &str, minimum: u64, maximum: u64) -> Error {
+    Error {
+        code: OUT_OF_RANGE,
+        reason: format!("{label} accepts {minimum} to {maximum}"),
     }
+}
 
-    /// Returns the values of the last commit.
-    #[must_use]
-    pub fn committed(&self) -> &Settings {
-        &self.committed
-    }
-
-    /// Returns every request that the provider returned, in order.
-    #[must_use]
-    pub fn requests(&self) -> &[ActionRequest] {
-        &self.requests
-    }
-
-    /// Records one returned request and passes it back.
-    fn note(&mut self, request: ActionRequest) -> ActionRequest {
-        self.requests.push(request);
-        request
-    }
-
-    /// Copies the values of one scope between the two records.
-    fn copy(&mut self, scope: Scope, forward: bool) -> Result<(), Error> {
-        for field in FIELDS {
-            if !in_scope(field.question, scope) {
-                continue;
-            }
-            if forward {
-                self.committed.copy_field(&self.draft, field.question)?;
-            } else {
-                self.draft.copy_field(&self.committed, field.question)?;
-            }
-        }
-        Ok(())
-    }
+/// A provider over typed [`Settings`].
+///
+/// # Examples
+///
+/// ```
+/// use forms::{Provider, Value};
+///
+/// let mut provider = forms_examples::SettingsProvider::new();
+/// let set = forms_examples::formset();
+/// let row = &set.pages[0].rows[4];
+/// assert_eq!(
+///     provider.read(forms_examples::HANDLE, &set, row),
+///     Ok(Value::Number(5))
+/// );
+/// ```
+#[derive(Clone, Debug)]
+pub struct SettingsProvider {
+    settings: Settings,
+    actions: Vec<Key>,
 }
 
 impl Default for SettingsProvider {
@@ -566,71 +415,278 @@ impl Default for SettingsProvider {
     }
 }
 
+impl SettingsProvider {
+    /// Creates a provider with the factory settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let provider = forms_examples::SettingsProvider::new();
+    /// assert_eq!(provider.settings().timeout, 5);
+    /// ```
+    pub fn new() -> Self {
+        Self {
+            settings: Settings {
+                secure_boot: false,
+                mode: 2,
+                cores: 4,
+                name: String::from("board"),
+                timeout: 5,
+                applied: 0,
+            },
+            actions: Vec::new(),
+        }
+    }
+
+    /// Returns the typed settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(forms_examples::SettingsProvider::new().settings().cores, 4);
+    /// ```
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Returns the current value of one value key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::Value;
+    ///
+    /// let provider = forms_examples::SettingsProvider::new();
+    /// assert_eq!(
+    ///     provider.read_setting(forms_examples::CORES),
+    ///     Value::Number(4)
+    /// );
+    /// ```
+    pub fn read_setting(&self, key: Key) -> Value {
+        setting_of(key).map_or_else(
+            || Value::Bytes(Vec::new()),
+            |setting| value_of(&self.settings, setting),
+        )
+    }
+
+    /// Returns the action keys that ran, in order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(forms_examples::SettingsProvider::new().actions().is_empty());
+    /// ```
+    pub fn actions(&self) -> &[Key] {
+        &self.actions
+    }
+}
+
 impl Provider for SettingsProvider {
     type Handle = u8;
 
-    fn formsets(&mut self) -> Result<Vec<(u8, FormSet)>, Error> {
+    fn formsets(&mut self) -> Result<Vec<(Self::Handle, FormSet)>, Error> {
         Ok(vec![(HANDLE, formset())])
     }
 
-    fn read(&mut self, _handle: u8, _set: &FormSet, question: &Question) -> Result<Value, Error> {
-        if is_action(question.id) {
-            return Ok(Value::Number(0));
+    fn read(&mut self, _handle: Self::Handle, _set: &FormSet, row: &Row) -> Result<Value, Error> {
+        let key = row.binding.ok_or_else(|| Error {
+            code: UNKNOWN_FIELD,
+            reason: String::from("The row has no value"),
+        })?;
+        match setting_of(key) {
+            Some(setting) => Ok(value_of(&self.settings, setting)),
+            None => Err(Error {
+                code: UNKNOWN_FIELD,
+                reason: String::from("No field has this key"),
+            }),
         }
-        self.draft.value(question.id)
     }
 
     fn write(
         &mut self,
-        _handle: u8,
+        _handle: Self::Handle,
         _set: &FormSet,
-        question: &Question,
+        row: &Row,
         value: &Value,
-    ) -> Result<ActionRequest, Error> {
-        self.draft.set(question.id, value)?;
-        Ok(self.note(ActionRequest::None))
+    ) -> Result<Request, Error> {
+        let key = row.binding.ok_or_else(|| Error {
+            code: UNKNOWN_FIELD,
+            reason: String::from("The row has no value"),
+        })?;
+        write_setting(&mut self.settings, key, value)?;
+        Ok(Request::None)
     }
 
     fn action(
         &mut self,
-        _handle: u8,
+        _handle: Self::Handle,
+        set: &FormSet,
+        row: &Row,
+    ) -> Result<Request, Error> {
+        let _ = set;
+        self.actions.push(row.key);
+        self.settings.applied = self.settings.applied.saturating_add(1);
+        Ok(Request::Apply {
+            scope: Scope::Set,
+            leave: false,
+        })
+    }
+
+    fn apply(&mut self, _handle: Self::Handle, _set: &FormSet, _scope: Scope) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn discard(
+        &mut self,
+        _handle: Self::Handle,
         _set: &FormSet,
-        question: &Question,
-    ) -> Result<ActionRequest, Error> {
-        let action = ACTIONS
-            .iter()
-            .find(|action| action.question == question.id)
-            .ok_or_else(|| error(UNKNOWN_QUESTION, "the question is not an action"))?;
-        Ok(self.note(action.request))
-    }
-
-    fn apply(&mut self, _handle: u8, _set: &FormSet, scope: Scope) -> Result<(), Error> {
-        self.copy(scope, true)
-    }
-
-    fn discard(&mut self, _handle: u8, _set: &FormSet, scope: Scope) -> Result<(), Error> {
-        self.copy(scope, false)
+        _scope: Scope,
+    ) -> Result<(), Error> {
+        Ok(())
     }
 }
 
-/// Returns whether the identifier is an action row.
-fn is_action(id: QuestionId) -> bool {
-    ACTIONS.iter().any(|action| action.question == id)
-}
-
-/// Returns whether a question lies in a scope.
-fn in_scope(id: QuestionId, scope: Scope) -> bool {
-    match scope {
-        Scope::FormSet => true,
-        Scope::Form(form) => form == FORM,
-        Scope::Question(question) => question == id,
+impl SettingsProvider {
+    /// Sets one typed field, for a test or a script.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write failure of the field.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::Value;
+    ///
+    /// let mut provider = forms_examples::SettingsProvider::new();
+    /// provider.set(forms_examples::CORES, Value::Number(8)).unwrap();
+    /// assert_eq!(provider.settings().cores, 8);
+    /// ```
+    pub fn set(&mut self, key: Key, value: Value) -> Result<(), Error> {
+        write_setting(&mut self.settings, key, &value)
     }
 }
 
-/// Builds one provider failure.
-fn error(code: u64, reason: &str) -> Error {
-    Error {
-        code,
-        reason: reason.to_string(),
+impl Settings {
+    /// Returns the name for a log line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(forms_examples::Settings::default().summary().contains("cores"));
+    /// ```
+    pub fn summary(&self) -> String {
+        format!(
+            "secure_boot={} mode={} cores={} name={} timeout={} applied={}",
+            self.secure_boot, self.mode, self.cores, self.name, self.timeout, self.applied
+        )
+    }
+}
+
+/// Returns the choice labels of the mode control.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(forms_examples::modes().len(), 2);
+/// ```
+pub fn modes() -> &'static [&'static str] {
+    &["Fast", "Safe"]
+}
+
+/// The label of the row that restores the factory values.
+pub const RESTORE: &str = "Restore defaults";
+
+/// Returns the row label of a setting.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     forms_examples::label_of(forms_examples::Setting::Cores),
+///     "Cores"
+/// );
+/// ```
+pub fn label_of(setting: Setting) -> &'static str {
+    FIELDS
+        .iter()
+        .find(|field| field.setting == setting)
+        .map_or("", |field| field.label)
+}
+
+/// Returns the description of one setting for a log line.
+///
+/// # Examples
+///
+/// ```
+/// assert!(forms_examples::describe(forms_examples::Setting::Timeout).contains("Menu"));
+/// ```
+pub fn describe(setting: Setting) -> String {
+    let label = label_of(setting);
+    let key = setting.key();
+    format!("{label} (key {})", key.0)
+}
+
+/// Returns the choices of the mode control as a vector, for a consumer.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(forms_examples::mode_choices()[0].label, "Fast");
+/// ```
+pub fn mode_choices() -> Vec<Choice> {
+    modes()
+        .iter()
+        .enumerate()
+        .map(|(index, label)| Choice::new(*label, index as u64 + 1))
+        .collect()
+}
+
+/// Returns the control of a setting.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     forms_examples::control_of(forms_examples::Setting::SecureBoot),
+///     forms_examples::ControlSpec::Toggle
+/// );
+/// ```
+pub fn control_of(setting: Setting) -> ControlSpec {
+    FIELDS
+        .iter()
+        .find(|field| field.setting == setting)
+        .map_or(ControlSpec::Toggle, |field| field.control)
+}
+
+/// Re-exported error type name for a consumer.
+pub use forms::Error as ProviderError;
+
+/// Returns the label of an error for a front end.
+///
+/// # Examples
+///
+/// ```
+/// let error = forms::Error::new("Bad value");
+/// assert_eq!(forms_examples::error_label(&error), "Bad value");
+/// ```
+pub fn error_label(error: &Error) -> &str {
+    &error.reason
+}
+
+/// Returns the text of a value for a report.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(forms_examples::value_label(&forms::Value::Bool(true)), "true");
+/// ```
+pub fn value_label(value: &Value) -> String {
+    match value {
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::Text(text) => text.clone(),
+        Value::List(values) => format!("{values:?}"),
+        Value::Bytes(bytes) => format!("{} bytes", bytes.len()),
     }
 }

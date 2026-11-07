@@ -1,281 +1,176 @@
 # forms
 
-A setup-forms engine, its navigation session and its ratatui setup page, in
-Rust.
+A setup-forms engine of its own, its navigation session, its modal model and
+its ratatui setup page, in Rust.
 
-The engine describes setup pages (formsets, forms, questions, conditions) and
-keeps the navigation state of one front end. One widget draws that state as a
-PC setup page. A front end supplies the key strokes and the ratatui backend.
-
-The core crates have no firmware dependency, so a Linux program and a UEFI
-image use the same engine. `forms-uefi` supplies the UEFI display and input
-front end. The `hii-*` crates are optional HII adapters.
+The `forms` crate owns the page description. A *set* holds *pages*; a page
+holds *rows*; a row has a stable key, a label, a control and an optional value
+binding. Values live in a store that the consumer owns, or behind a provider.
+No type in the crate carries a firmware identity, a firmware storage location
+or a firmware opcode. HII is an adapter, not a foundation.
 
 ## Structure
 
 | Item | Layer | Content | Builds for |
 | --- | --- | --- | --- |
-| `forms` | model | Formsets, forms, statements, questions, values, the `Provider` trait | `no_std` + `alloc`, any target |
-| `forms::Session` | session | Navigation state: `Input` in, `Event` and `View` out | `no_std` + `alloc`, any target |
-| `forms::widgets` | view | `FormsWidget`, `PopupWidget` and `Theme`: draw a `View` and a `Popup` as a setup page | `no_std` + `alloc`, any target |
-| `forms-uefi` | front end | UEFI display and input: graphics output with a text console fallback, `KeyMap`, `Shell` | UEFI targets, host build for the key map tests |
-| `hii-abi` | HII layouts | UEFI HII package and IFR layout constants, with no dependency | `no_std`, any target |
-| `hii-ifr` | HII codec | IFR and HII string package codec for the forms model | `no_std` + `alloc`, any target |
-| `hii-uefi` | HII provider | `forms::Provider` over the UEFI HII database, publication of a `forms::Provider` as a formset, and the HII popup protocol over `forms::Popup`, with `popup::ask` as its consumer | UEFI targets, host build for the producer and popup tests |
-| `forms-examples` | teaching | Compiled example programs and the `Provider` behind them: a templated formset over typed settings, a popup, and action requests | host |
-| `forms-sim` | front end | Browser front end: the real widget drawn into a panel framebuffer, with a demo page over `forms-examples` | host and `wasm32-unknown-unknown` |
+| `forms::model` | model | Keys, sets, pages, rows, controls, values, expressions, validation, defaults, refresh policies, `Store`, `Provider`, `MemoryProvider` | `no_std` + `alloc`, any target |
+| `forms::ext` | extension | `Handler`, `Registry`, `Decoration`, `EditState`: one dispatch path for built-in and consumer controls | `no_std` + `alloc` |
+| `forms::session` | session | `Input` in, `Event` and `View` out, editors, validation, defaults, refresh | `no_std` + `alloc` |
+| `forms::modal` | modal | `Modal`, buttons with roles, safe default, progress | `no_std` + `alloc` |
+| `forms::widgets` | view | `FormsWidget`, `ModalWidget`, `Theme`, `Painters` | `no_std` + `alloc` |
+| `forms-uefi` | front end | UEFI display and input | UEFI targets |
+| `hii-abi` | HII layouts | Raw HII package and IFR layout constants | `no_std`, any target |
+| `hii-ifr` | HII codec | IFR and HII package codec, and the HII export descriptor | `no_std` + `alloc`, any target |
+| `hii-uefi` | HII adapter | `forms::Provider` over the HII database, publication through HII Config Access, and the HII popup protocol over `forms::Modal` | UEFI targets, host build for the producer and popup tests |
+| `forms-examples` | teaching | Compiled examples: a templated set, a modal, requests, and a consumer control with a theme override | host |
+| `forms-sim` | front end | Browser front end: the real widget drawn into a panel framebuffer | host and `wasm32-unknown-unknown` |
 
-The crate is one unit because the parts are useless apart: a session without a
-model has nothing to navigate, and a widget without a view has nothing to draw.
-The session draws nothing, and the widget holds no state.
+## The model
 
-HII is an optional capability, not a foundation. `forms` and `forms-uefi` name
-no HII type. A front end checks the HII database once and adds a `hii-uefi`
-provider when the firmware publishes one. maOS browses the firmware formsets in
-its Firmware Settings page. ODP `opq` initializes and repairs the inherited HII
-stack, then shows its own pages through its native provider. A host without HII
-keeps its native pages.
+```rust
+use forms::{Builder, Control, Choice, Key};
 
-## Navigation
+let mut builder = Builder::new(Key(1), "Platform");
+builder.page("Boot");
+builder.row("Secure boot", Control::Toggle).set_binding(Key(10));
+builder.row("Timeout", Control::Slider {
+    minimum: 0,
+    maximum: 10,
+    step: 1,
+    unit: String::from("s"),
+    labels: vec![Choice::new("Forever", 0)],
+}).set_binding(Key(11));
+builder.defaults(Key(40), "Factory", [(Key(10), forms::Value::Bool(false))]);
+let set = builder.build();
+```
 
-`forms::Session` ends every page with a `< Back` row, so a front end with only
-three keys (a phone: volume up, volume down, power) can return to the previous
-page; `with_back_row(false)` removes it for a front end with an Esc key. Up and
-Down wrap at both ends of the selectable rows. A choice editor ends with the
-same `< Back` row and wraps the same way, so Enter on that row cancels the
-editor and leaves the committed value unchanged.
-`Session::enter(guid)` opens one formset and pins it: Back on its entry form
-ends the session instead of showing the list.
-`with_entry_back_row(false)` removes only the pinned entry form's Back row.
-`with_readable_rows(true)` lets Up and Down select information rows, so long
-information pages scroll and show their help. Enter on these rows has no effect.
+`Builder` allocates page, row and value keys in creation order, so a rebuilt set
+is identical. A consumer that owns persistent state keeps its own keys and
+binds them with `Row::set_binding`, or with a typed `FieldBinding<T>`.
 
-Navigation and refresh preserve both the provider handle and the formset GUID.
-Different providers can publish the same GUID without sharing question state.
-`enter(guid)` selects the first matching provider and retains that identity.
+Controls:
 
-## Popups
-
-`forms::Popup` is the modal decision that UEFI firmware publishes as
-`EFI_HII_POPUP_PROTOCOL.CreatePopup`. It carries a style (`Info`, `Warning`,
-`Error`), a type that fixes the legal answers (`Ok`, `OkCancel`, `YesNo`,
-`YesNoCancel`) and the message. `Popup::new` selects the first answer, except
-for a warning or an error question, which selects `No` so that one Enter
-refuses the question.
-
-`Session::open_popup` shows one over the running page, so a front end raises a
-confirmation without a second session. `View::popup` carries it, and
-`forms::widgets::FormsWidget` draws it as a centered modal that covers the page
-rows. While a popup is open, `Input` reaches the popup first and nothing else
-changes. Left and Right (and Up and Down for a three-key front end) move the
-highlight and wrap; Enter accepts the highlight; the letters `Y`, `N`, `O` and
-`C` accept that answer when the type offers it; Back cancels only a popup whose
-type offers Cancel. A selection closes the popup and returns
-`Event::Popup(selection)`. A popup never reports an answer that its type does
-not offer, so a warning cannot be dismissed into consent.
-
-A front end that has no formset to publish asks through `hii_uefi::popup::ask`.
-The call encodes the message with `hii-ifr`, publishes it as a package list of
-its own, calls `CreatePopup` and removes the list again. The producer of the
-firmware answers, so an inherited browser and a browser that the image
-installed both work. A failed call returns the firmware status, and a caller
-never reads a missing answer as consent.
-
-## Action requests
-
-A provider answers a change or an action with an `ActionRequest`. The value is
-the number that a UEFI driver writes to `ActionRequest` in
-`EFI_HII_CONFIG_ACCESS_PROTOCOL.Callback`: 0 to 9, from `None` to
-`QuestionApply`. The session is the browser, so it acts on the request before
-it returns `Event::Response`:
-
-| Request | Effect |
+| Control | Meaning |
 | --- | --- |
-| `None` | Nothing |
-| `Reset` | The page stays, the message asks for a reset, and the front end resets. |
-| `Submit` | `apply(FormSet)`, then the formset list |
-| `Exit` | `discard(FormSet)`, then the formset list |
-| `FormSubmitExit` | `apply(Form(..))`, then the previous page |
-| `FormDiscardExit` | `discard(Form(..))`, then the previous page |
-| `FormApply` | `apply(Form(..))`, the page stays |
-| `FormDiscard` | `discard(Form(..))`, the page stays |
-| `Reconnect` | `reconnect(handle)` |
-| `QuestionApply` | `apply(Question(..))` |
+| `Heading` | A section heading |
+| `Text` | An information row, live from its binding or static |
+| `Link` | A page or another set, with an optional target row |
+| `Action` | A provider command |
+| `Toggle` | A logical switch |
+| `Choice` | One of listed values |
+| `Number` | A bounded number with a step |
+| `Slider` | A bounded number that two keys adjust, with a unit and special labels |
+| `TextInput` | Text with full keyboard editing, optionally secret |
+| `OrderedList` | Chosen values in order, with reordering and a limit |
+| `Reset` | Write one named default set |
+| `Progress` | A progress bar or a busy indicator |
+| `Divider` | A rule |
+| `Unsupported` | An imported control that the crate cannot show |
+| `Custom` | A registered consumer control |
 
-A provider writes every change at once. A provider that wants a discard to
-change something therefore keeps the value from before the first change of a
-scope, and writes it back in `discard`. A failed call keeps the page and shows
-the reason.
+`Row` carries an optional `hidden`, `disabled` and `read_only` expression, a
+`locked` flag, `validation` rules (`Warning`, `Edit`, `Submit`), a `refresh`
+policy and presentation hints. Conditions use a small expression language:
+`Equal`, `Less`, `LessEqual`, `In`, `And`, `Or`, `Not`. A condition that cannot
+be evaluated is an error, not `false`, so a page never silently enables a row.
 
-## The page
+## The session
 
-`FormsWidget` keeps the usual setup-browser columns at any width. The prompt is
-on the left, the value is on the right, and one blank cell separates them. A
-value that does not fit its column loses its tail and ends with `~`, so clipped
-text is visible as clipped. A read-only value (`RowKind::Info`) wraps into the
-value column instead, and the row takes one screen line per wrapped part. The
-selection still follows rows, not lines. Key hints are centered with one blank
-cell at each edge, and the widget uses the longest hint that fits the width. The
-page footer changes with the active editor; popups do not repeat those hints.
-Rows with no value use the full width for their prompt. Headings draw a rule
-to the right edge. Set `Theme::heading_rule` to `false` to omit the rule.
+`Session::input(Input, &mut provider) -> Event` and
+`Session::view(&mut provider) -> View`. The session holds navigation state
+only. It reads a value before it shows it and writes every change through the
+provider, so a front end holds no copy.
 
-`Theme` holds the colours and styles of one page. A front end starts from
-`Theme::default()` and changes single fields.
+`Event` is the only response vocabulary:
 
-## Use on Linux
+| Event | Meaning |
+| --- | --- |
+| `None` | Nothing changed |
+| `Changed` | The page, editor or value changed |
+| `Warning(String)` | A warning asks for one more Enter |
+| `Failed(Error)` | An operation failed; the message carries the reason |
+| `Response(Request)` | The session ran a provider request |
+| `Modal(ModalOutcome)` | A modal finished |
+| `Exit` | The person left the root page |
 
-A Linux program builds `forms::FormSet` values from its own settings, implements
-`forms::Provider` over its own storage (`formsets`, `read`, `write`, `action`)
-and over the lifecycle calls (`apply`, `discard`, `reconnect`),
-feeds key strokes to a `forms::Session` and draws each `forms::View` with
-`forms::widgets::FormsWidget` on a ratatui terminal backend.
+Validation refuses a value before any write: an `Edit` rule keeps the value
+unchanged and returns `Failed`. A `Warning` rule returns `Warning` once and
+accepts the confirmed input. A `Submit` rule blocks leaving the page. A
+`Reset` row writes the named default set and commits it.
 
-`cargo run -p forms --example host` runs that loop in a terminal over an
-in-memory provider. `--once` draws one frame and prints it.
+An ordered list editor moves entries with Left and Right, adds or removes them
+with Enter and commits on its closing `Done` entry. A slider editor changes
+the value with Up and Down, commits with Enter and leaves the old value with
+Back.
 
-`crates/forms-examples` holds three compiled example programs for a consumer
-that writes its own provider: a templated formset over typed settings, a popup
-confirm and the handling of action requests. Each program runs on the host and
-prints the events, the requests and the settings records without a terminal.
-[Its README](crates/forms-examples/README.md) gives the commands and the
-lessons.
+## Extension
 
-Draw a frame at the width of a phone screen, and a frame with an open editor:
+Every control kind, including the built-in kinds, is a `Handler` in a
+`Registry`. A consumer adds a control by registering a handler for a new kind,
+or replaces a built-in handler for its kind:
 
-```sh
-cargo run -p forms --example host -- --once --columns 53 --rows 20
-cargo run -p forms --example host -- --once --columns 53 --rows 20 --open
+```rust
+use forms::{Decoration, Field, Handler, Registry, Key};
+
+struct Gauge;
+
+impl Handler for Gauge {
+    fn format(&self, _field: &Field<'_>) -> String { String::from("64%") }
+    fn decoration(&self, _field: &Field<'_>) -> Decoration { Decoration::Plain }
+}
+
+let mut registry = Registry::builtin();
+registry.insert(Key(0x100), Box::new(Gauge));
+let session = forms::Session::<u8>::new(Vec::new()).with_registry(registry);
 ```
 
-Check three things in the printed frame:
+Drawing of a consumer decoration goes through a `Paint` function in
+`forms::widgets::Painters`. The theme carries the colours, the column split,
+the label limit, the overflow policy, the clip mark and the switch marks, so a
+front end starts from `Theme::default()` and changes single fields.
+`forms-examples` has a working consumer control and theme override.
 
-- The key hints are centered and keep one blank cell at each edge.
-- Opening an editor changes the page footer without adding hints to its border.
-- A long read-only value wraps, and a clipped value ends with `~`.
+## Modal
 
-## Use on UEFI
+`Modal` has a title, a body, a style (`Info`, `Warning`, `Danger`, `Error`),
+its own buttons with roles (`Default`, `Cancel`, `Other`), an optional progress
+state and a highlighted button. The Cancel button is selected first, so one
+Enter refuses a dangerous question; a modal without a Cancel button selects its
+default button. `Session::open_modal` shows a modal over the running page and
+`Event::Modal` returns the outcome.
 
-A UEFI image implements `forms::Provider` over its own facts and a
-`forms_uefi::Shell`. The shell receives one description of the display and
-every turn, so it can run a boot timer and act on page commands. The image
-calls `forms_uefi::run` with the default keyboard map, or
-`forms_uefi::run_with` with another map such as `forms_uefi::map_key_phone` on
-a phone.
+## HII
 
-The front end draws on the graphics output when the firmware publishes one, and
-on the inherited text console otherwise. It prefers Text Input Ex and falls
-back to basic console input on the same handle. Display and input are
-independent: graphics without Text Input Ex, or text without graphics output,
-still works.
+`hii-ifr` converts between a set and IFR packages. The HII facts that the
+model does not hold live in `hii_ifr::Export`: the form set GUID, class GUIDs,
+variable stores, question identifiers and question storage, and refresh event
+GUIDs. `hii_ifr::descriptor` builds one for a set with a single buffer store.
 
-## Publish a formset
+Controls that IFR cannot express degrade on export:
 
-A driver that owns settings publishes them to the HII database, so the
-firmware setup browser and every HII consumer see one standard formset. The
-driver keeps its own storage.
+| Control or rule | IFR form |
+| --- | --- |
+| `Progress` | `TEXT` with the current value |
+| `Divider` | Empty `SUBTITLE` |
+| `Custom` | `TEXT` with the consumer kind |
+| `Slider` | `NUMERIC` with the same bounds and step |
+| Event refresh | `REFRESH_ID` when the descriptor names a GUID, otherwise omitted |
+| Warning, edit, submit rule | `WARNING_IF`, `INCONSISTENT_IF`, `NO_SUBMIT_IF` |
+| Disabled condition | `DISABLE_IF` |
+| Hidden condition | `SUPPRESS_IF` |
+| Locked or read-only row | `EFI_IFR_FLAG_READ_ONLY` |
 
-`hii_uefi::publish::Registration::new` does five steps:
+An opcode that the decoder does not model becomes an inert
+`Control::Unsupported` row, so a foreign row stays visible.
 
-1. `hii_uefi::producer::PreparedFormSet` rewrites the formset so that every
-   value question uses one buffer variable store. The store has identifier
-   1, name `Forms`, the formset GUID and the declared size. Questions keep
-   their form order and take sequential byte offsets.
-2. The adapter encodes the package list with `hii-ifr`.
-3. It installs a vendor device path on a new handle.
-4. It calls `EFI_HII_DATABASE_PROTOCOL.NewPackageList` for that handle.
-5. It installs `EFI_HII_CONFIG_ACCESS_PROTOCOL` on the same handle.
-
-`ExtractConfig` reads every requested question with `Provider::read` and
-builds a `<ConfigResp>`. A `NULL` request or a header-only request means every
-question. `RouteConfig` parses the `<ConfigResp>`, overlays the blocks on the
-current buffer, and calls `Provider::write` for each changed question. A
-provider failure becomes the returned status, and `Progress` points at the
-failing block.
-
-```rust,no_run
-use hii_uefi::publish::Registration;
-use hii_uefi::raw::Boot;
-
-# fn publish<P: forms::Provider + 'static>(boot: Boot, set: forms::FormSet, provider: P, handle: P::Handle)
-#     -> Result<(), uefi_raw::Status> {
-// SAFETY: The driver stays resident until removal succeeds.
-let mut registration = unsafe { Registration::new(boot, set, provider, handle)? };
-// ... use the settings ...
-registration.remove()?;
-# Ok(())
-# }
-```
-
-The provider decides where the values live. The buffer store is only the
-form view of the data. A provider that maps questions to `Opq*` settings can
-publish the same formset that its native pages show.
-
-Limits:
-
-- The producer supports checkboxes, numbers, one-of choices and bounded text.
-  Text takes `maximum * 2` bytes and stores UTF-16.
-- Action questions keep no storage. `Callback` runs them through
-  `Provider::action` and reports the returned request to the browser. A
-  browser request to submit the formset becomes `Provider::apply`.
-- Values that the provider refuses do not change the stored data, and the
-  browser shows the returned status.
-- The adapter uses firmware pool memory for the protocol context. A failed
-  removal keeps that memory and the provider alive, because firmware would
-  otherwise hold a stale pointer. Call `remove` before driver unload.
-
-## Show a popup
-
-A driver callback asks the setup browser for one decision through
-`EFI_HII_POPUP_PROTOCOL.CreatePopup`. `hii_uefi::popup::Registration::install`
-publishes that protocol, so a driver callback reaches the page that the front
-end shows.
-
-`CreatePopup` does four steps:
-
-1. It checks the popup type and the message identifier.
-2. `hii_uefi::popup::HiiStrings` resolves the message through
-   `EFI_HII_STRING_PROTOCOL`.
-3. It builds a `forms::Popup` and calls the `Presenter` of the front end.
-4. It checks the answer against the popup type and writes the selection.
-
-```rust,no_run
-use hii_uefi::popup::{HiiStrings, Registration};
-use hii_uefi::raw::Boot;
-
-# fn serve(boot: Boot, presenter: impl hii_uefi::popup::Presenter + 'static)
-#     -> Result<(), uefi_raw::Status> {
-let strings = HiiStrings::new(boot)?;
-// SAFETY: The driver stays resident until removal succeeds.
-let mut registration = unsafe { Registration::install(boot, presenter, strings)? };
-// ... the HII browser calls CreatePopup ...
-registration.remove()?;
-# Ok(())
-# }
-```
-
-The front end implements `Presenter` over its display and input, and drives
-`forms::Popup::input` for the keys. The crate holds no display code, because
-display and input belong to the front end. `Registration` also accepts a
-`Box<dyn Presenter>`.
-
-Limits:
-
-- An unknown popup type, a null HII handle, message 0, or a message that does
-  not resolve returns `EFI_INVALID_PARAMETER`, and the popup does not show.
-- An answer outside the popup type returns `EFI_INVALID_PARAMETER`, and the
-  selection output keeps its old value.
-- A popup style that the firmware does not define shows the message as
-  information, as the EDK II display engine does.
-- A presenter or resolver call that re-enters the protocol gets
-  `EFI_ACCESS_DENIED`. The outer popup still answers.
-- The context lives in firmware pool memory. A failed removal keeps that
-  memory and the presenter alive. Call `remove` before driver unload.
+`hii-uefi` publishes a set through HII Config Access and serves the HII popup
+protocol through `Modal`. `hii_uefi::map_request` maps a driver action request
+to a `forms::Request`; `hii_uefi::popup::modal_of` builds the modal of a popup
+request.
 
 ## Build and check
 
-Rust 1.95.0 stable (`rust-toolchain.toml`). The `forms` crate uses no feature
-gate, because Patina firmware links it at the same pin.
+Rust 1.95.0 stable (`rust-toolchain.toml`).
 
 ```sh
 cargo fmt --check
@@ -284,18 +179,10 @@ cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-`--all-targets` also covers the host example of the `forms` crate and the three
+`--all-targets` also covers the host example of the `forms` crate and the four
 example programs of `crates/forms-examples`.
 
-`cargo build -p hii-uefi --example smoke --target x86_64-unknown-uefi` builds
-a firmware smoke test. It publishes an in-memory formset, lists it with the
-consumer provider, reads a value, writes a value, and checks that the provider
-saw the write. Boot it in QEMU with OVMF and the serial console shows
-`SMOKE PASS`. The example has the exact image and QEMU commands.
-
-Check the front end for the UEFI targets that rustup has installed:
-
 ```sh
-cargo check -p forms-uefi --target x86_64-unknown-uefi
-cargo check -p forms-uefi --target aarch64-unknown-uefi
+cargo run -p forms --example host -- --once --columns 53 --rows 20
+cargo run -p forms-examples --example custom
 ```

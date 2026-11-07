@@ -1,6 +1,6 @@
 [package]
 name = "forms-examples"
-description = "Small compiled examples of the forms engine: a templated formset, a popup and action requests"
+description = "Small compiled examples of the forms crate: a templated set, a modal, requests and a consumer control"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,6 +16,7 @@ forms.workspace = true
 [dev-dependencies]
 crossterm.workspace = true
 ratatui = { workspace = true, features = ["crossterm"] }
+ratatui-core.workspace = true
 
 [[example]]
 name = "settings"
@@ -25,3 +26,6 @@ name = "popup"
 
 [[example]]
 name = "actions"
+
+[[example]]
+name = "custom"
