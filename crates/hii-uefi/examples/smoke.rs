@@ -34,7 +34,6 @@ mod smoke {
     use alloc::collections::BTreeMap;
     use alloc::rc::Rc;
     use alloc::string::{String, ToString};
-    use alloc::vec;
     use alloc::vec::Vec;
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::RefCell;
@@ -43,8 +42,7 @@ mod smoke {
     use core::sync::atomic::{AtomicPtr, Ordering};
 
     use forms::{
-        ActionRequest, Error, Form, FormId, FormSet, Provider as FormsProvider, Question,
-        QuestionFlags, QuestionId, Statement, Storage, Value, Width,
+        Builder, Control, Error, FormSet, Key, Provider as FormsProvider, Request, Row, Value,
     };
     use hii_uefi::hii::HiiProvider;
     use hii_uefi::publish::Registration;
@@ -53,6 +51,18 @@ mod smoke {
     use uefi_raw::table::runtime::ResetType;
     use uefi_raw::table::system::SystemTable;
     use uefi_raw::{Handle, Status};
+
+    /// The GUID that the example publishes.
+    const GUID: [u8; 16] = [
+        0x42, 0x51, 0x33, 0x24, 0x15, 0x06, 0xF7, 0xE8, 0xD9, 0xCA, 0xBB, 0xAC, 0x9D, 0x8E, 0x7F,
+        0x60,
+    ];
+
+    /// The value key of the switch.
+    const SWITCH: Key = Key(1);
+
+    /// The value key of the number.
+    const NUMBER: Key = Key(2);
 
     /// The boot services that the global allocator uses.
     static SERVICES: AtomicPtr<BootServices> = AtomicPtr::new(ptr::null_mut());
@@ -135,55 +145,29 @@ mod smoke {
         }
     }
 
-    /// Returns a question with no storage. The producer maps it.
-    fn question(id: u16) -> Question {
-        Question {
-            id: QuestionId(id),
-            prompt: "Value".to_string(),
-            help: String::new(),
-            storage: Storage::None,
-            flags: QuestionFlags(0),
-        }
-    }
-
-    /// Builds the sample formset.
+    /// Builds the sample form set.
     fn formset() -> FormSet {
-        FormSet {
-            guid: [
-                0x42, 0x51, 0x33, 0x24, 0x15, 0x06, 0xF7, 0xE8, 0xD9, 0xCA, 0xBB, 0xAC, 0x9D, 0x8E,
-                0x7F, 0x60,
-            ],
-            title: "Smoke formset".to_string(),
-            help: String::new(),
-            class_guids: Vec::new(),
-            varstores: Vec::new(),
-            forms: vec![Form {
-                id: FormId(1),
-                title: "Main".to_string(),
-                items: vec![
-                    Statement::Checkbox {
-                        question: question(1),
-                        default: true,
-                    }
-                    .into(),
-                    Statement::Numeric {
-                        question: question(2),
-                        width: Width::U16,
-                        minimum: 0,
-                        maximum: 1000,
-                        step: 1,
-                    }
-                    .into(),
-                ],
-            }],
-        }
+        let mut builder = Builder::new(Key(1), "Smoke formset");
+        builder.page("Main");
+        builder.row("Switch", Control::Toggle).set_binding(SWITCH);
+        builder
+            .row(
+                "Number",
+                Control::Number {
+                    minimum: 0,
+                    maximum: 1000,
+                    step: 1,
+                },
+            )
+            .set_binding(NUMBER);
+        builder.build()
     }
 
     /// The in-memory settings of the example.
     #[derive(Default)]
     struct Settings {
-        values: BTreeMap<u16, Value>,
-        writes: Vec<(u16, Value)>,
+        values: BTreeMap<Key, Value>,
+        writes: Vec<(Key, Value)>,
     }
 
     /// A provider over [`Settings`], shared with the test body.
@@ -200,13 +184,14 @@ mod smoke {
             &mut self,
             _handle: Self::Handle,
             _set: &FormSet,
-            question: &Question,
+            row: &Row,
         ) -> Result<Value, Error> {
+            let key = row.binding.unwrap_or(row.key);
             Ok(self
                 .0
                 .borrow()
                 .values
-                .get(&question.id.0)
+                .get(&key)
                 .cloned()
                 .unwrap_or(Value::Number(0)))
         }
@@ -215,21 +200,22 @@ mod smoke {
             &mut self,
             _handle: Self::Handle,
             _set: &FormSet,
-            question: &Question,
+            row: &Row,
             value: &Value,
-        ) -> Result<ActionRequest, Error> {
+        ) -> Result<Request, Error> {
+            let key = row.binding.unwrap_or(row.key);
             let mut settings = self.0.borrow_mut();
-            settings.values.insert(question.id.0, value.clone());
-            settings.writes.push((question.id.0, value.clone()));
-            Ok(ActionRequest::None)
+            settings.values.insert(key, value.clone());
+            settings.writes.push((key, value.clone()));
+            Ok(Request::None)
         }
 
         fn action(
             &mut self,
             _handle: Self::Handle,
             _set: &FormSet,
-            _question: &Question,
-        ) -> Result<ActionRequest, Error> {
+            _row: &Row,
+        ) -> Result<Request, Error> {
             Err(Error {
                 code: Status::UNSUPPORTED.0 as u64,
                 reason: "no actions".to_string(),
@@ -240,13 +226,19 @@ mod smoke {
     /// Runs the smoke test and returns a failure message.
     fn run(boot: Boot) -> Result<(), String> {
         let settings = Rc::new(RefCell::new(Settings::default()));
-        settings.borrow_mut().values.insert(1, Value::Bool(true));
-        settings.borrow_mut().values.insert(2, Value::Number(7));
+        settings
+            .borrow_mut()
+            .values
+            .insert(SWITCH, Value::Bool(true));
+        settings
+            .borrow_mut()
+            .values
+            .insert(NUMBER, Value::Number(7));
         let provider = MemoryProvider(settings.clone());
 
         // SAFETY: The program stays resident until removal.
         let mut registration = unsafe {
-            Registration::new(boot, formset(), provider, 0)
+            Registration::new(boot, formset(), GUID, provider, 0)
                 .map_err(|status| alloc::format!("registration failed: {status}"))?
         };
         print("SMOKE published\r\n");
@@ -258,20 +250,16 @@ mod smoke {
             .map_err(|error| alloc::format!("cannot list formsets: {}", error.reason))?;
         let (handle, set) = sets
             .iter()
-            .find(|(_, set)| set.guid == formset().guid)
+            .find(|(_, set)| set.title == "Smoke formset")
             .map(|(handle, set)| (*handle, set.clone()))
-            .ok_or_else(|| "the published formset is missing".to_string())?;
-        print("SMOKE listed formset\r\n");
+            .ok_or_else(|| "the published form set is missing".to_string())?;
+        print("SMOKE listed form set\r\n");
 
         let numeric = set
-            .forms
-            .iter()
-            .flat_map(|form| form.items.iter())
-            .find_map(|item| match &item.statement {
-                Statement::Numeric { question, .. } if question.id.0 == 2 => Some(question.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| "the numeric question is missing".to_string())?;
+            .row(NUMBER)
+            .cloned()
+            .filter(|row| matches!(row.control, Control::Number { .. }))
+            .ok_or_else(|| "the numeric row is missing".to_string())?;
 
         let value = consumer
             .read(handle, &set, &numeric)
@@ -284,7 +272,7 @@ mod smoke {
         consumer
             .write(handle, &set, &numeric, &Value::Number(42))
             .map_err(|error| alloc::format!("write failed: {}", error.reason))?;
-        let observed = settings.borrow().values.get(&2).cloned();
+        let observed = settings.borrow().values.get(&NUMBER).cloned();
         if observed != Some(Value::Number(42)) {
             return Err(alloc::format!("provider saw {observed:?}"));
         }

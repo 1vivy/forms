@@ -12,10 +12,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 make check-uefi
 ```
 
-The last command lints `hii-uefi` and `forms-uefi` for `aarch64-unknown-uefi`
-and `x86_64-unknown-uefi` with `-D warnings`. It runs the two aliases
-`cargo check-uefi-aarch64` and `cargo check-uefi-x86`, so a target that stops
-compiling fails the gate. `make check` runs the host gate.
+The last command lints `hii-uefi` and `forms-uefi`, their examples including
+`smoke`, for `aarch64-unknown-uefi` and `x86_64-unknown-uefi` with
+`-D warnings`. It runs the two aliases `cargo check-uefi-aarch64` and
+`cargo check-uefi-x86`, so a target or an example that stops compiling fails
+the gate. `make check` runs the host gate.
 
 Cargo writes to `out/cargo` (`.cargo/config.toml`).
 
