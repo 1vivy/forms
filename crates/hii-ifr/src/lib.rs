@@ -18,8 +18,13 @@
 //! | Consumer control | `TEXT` with the page label |
 //! | Event refresh | `REFRESH_ID` when the descriptor names a GUID, otherwise omitted |
 //! | Warning, edit and submit rules | `WARNING_IF`, `INCONSISTENT_IF`, `NO_SUBMIT_IF` |
-//! | Disabled condition | `DISABLE_IF` |
+//! | Disabled condition | `GRAY_OUT_IF`; a foreign `DISABLE_IF` decodes as `disabled` |
 //! | Hidden condition | `SUPPRESS_IF` |
+//! | Read-only condition | A static `EFI_IFR_FLAG_READ_ONLY`, because IFR has no read-only condition |
+//!
+//! The read-only round trip loses the condition: a row with a `read_only`
+//! expression exports as a question with the static flag and decodes as a
+//! locked row, so a rebuilt page cannot restore the expression.
 //!
 //! An opcode that the decoder does not model becomes a
 //! [`forms::Control::Unsupported`] row, so a foreign row stays visible instead

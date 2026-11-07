@@ -164,9 +164,14 @@ Controls that IFR cannot express degrade on export:
 | `Slider` | `NUMERIC` with the same bounds and step |
 | Event refresh | `REFRESH_ID` when the descriptor names a GUID, otherwise omitted |
 | Warning, edit, submit rule | `WARNING_IF`, `INCONSISTENT_IF`, `NO_SUBMIT_IF` |
-| Disabled condition | `DISABLE_IF` |
+| Disabled condition | `GRAY_OUT_IF`; a foreign `DISABLE_IF` decodes as `disabled` |
 | Hidden condition | `SUPPRESS_IF` |
 | Locked or read-only row | `EFI_IFR_FLAG_READ_ONLY` |
+
+The read-only round trip loses the condition. IFR has no read-only
+condition, so a row with a `read_only` expression exports as a question with
+the static flag and decodes as a locked row; a rebuilt page cannot restore the
+expression.
 
 An opcode that the decoder does not model becomes an inert
 `Control::Unsupported` row, so a foreign row stays visible.
