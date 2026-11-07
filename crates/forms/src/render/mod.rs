@@ -13,7 +13,7 @@
 //!
 //! ```
 //! use forms::View;
-//! use forms::widgets::FormsWidget;
+//! use forms::render::FormsWidget;
 //! use ratatui_core::buffer::Buffer;
 //! use ratatui_core::layout::Rect;
 //! use ratatui_core::widgets::Widget;
@@ -36,8 +36,10 @@
 
 mod modal;
 mod page;
+mod placement;
 mod theme;
 
 pub use modal::ModalWidget;
 pub use page::{FormsWidget, Paint, Painters};
+pub use placement::{Margins, Placement, placement};
 pub use theme::{Alignment, KeyNames, Theme};

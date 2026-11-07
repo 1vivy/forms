@@ -63,7 +63,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use core::time::Duration;
 
-use forms::widgets::FormsWidget;
+use forms::render::FormsWidget;
 use forms::{Event, Provider, Session};
 use graphics::GopDisplay;
 use input::Keys;
@@ -254,10 +254,10 @@ where
 }
 
 /// The page area of a text console, inside the margins of
-/// [`forms::page::Margins::default`].
+/// [`forms::render::Margins::default`].
 fn margins(area: Rect) -> Rect {
     let (left, top, width, height) =
-        forms::page::Margins::default().area((u32::from(area.width), u32::from(area.height)));
+        forms::render::Margins::default().area((u32::from(area.width), u32::from(area.height)));
     Rect::new(
         area.x + u16::try_from(left).unwrap_or(0),
         area.y + u16::try_from(top).unwrap_or(0),

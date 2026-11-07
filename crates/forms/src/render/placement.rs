@@ -8,7 +8,7 @@
 //! # Examples
 //!
 //! ```
-//! use forms::page::{Margins, placement};
+//! use forms::render::{Margins, placement};
 //!
 //! // A 1272 by 2772 panel keeps one tenth on every edge.
 //! let page = placement((1272, 2772), (6, 10), 40, 16, Margins::default());
@@ -25,7 +25,7 @@
 /// # Examples
 ///
 /// ```
-/// use forms::page::Margins;
+/// use forms::render::Margins;
 ///
 /// let margins = Margins { top: 50, right: 100, bottom: 150, left: 200 };
 /// assert_eq!(margins.top, 50);
@@ -49,7 +49,7 @@ impl Margins {
     /// # Examples
     ///
     /// ```
-    /// use forms::page::Margins;
+    /// use forms::render::Margins;
     ///
     /// assert_eq!(Margins::uniform(0).left, 0);
     /// assert_eq!(Margins::uniform(2_000).right, 1_000);
@@ -69,7 +69,7 @@ impl Margins {
     /// # Examples
     ///
     /// ```
-    /// use forms::page::Margins;
+    /// use forms::render::Margins;
     ///
     /// assert_eq!(Margins::uniform(0).area((800, 600)), (0, 0, 800, 600));
     /// assert_eq!(
@@ -148,7 +148,7 @@ pub struct Placement {
 /// # Examples
 ///
 /// ```
-/// use forms::page::{Margins, placement};
+/// use forms::render::{Margins, placement};
 ///
 /// let page = placement((800, 600), (6, 10), 40, 16, Margins::default());
 /// assert_eq!(page.scale, 2);

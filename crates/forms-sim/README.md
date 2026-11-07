@@ -3,7 +3,7 @@
 A browser front end for one `forms` session.
 
 The crate runs a real `forms::Session` and draws its `forms::View` with
-`forms::widgets::FormsWidget` through `mousefood` and `embedded-graphics`, as a
+`forms::render::FormsWidget` through `mousefood` and `embedded-graphics`, as a
 firmware front end does. The difference is the pixel target: a RAM framebuffer
 of a panel, not a graphics output. The same cell, the same widget and the same
 page placement therefore give the same picture.
@@ -26,7 +26,7 @@ firmware, without an emulator and without a build of the consuming image.
 | Item | Content |
 | --- | --- |
 | `Config` | The panel size, the font cell, the fewest columns and rows, and the margins |
-| `Config::placement` | Where the page sits, from `forms::page::placement` |
+| `Config::placement` | Where the page sits, from `forms::render::placement` |
 | `Screen` | The RGB framebuffer of the panel, `Screen::draw`, and `Screen::set_theme` for the theme that it draws with |
 
 ## Use from another crate

@@ -13,7 +13,7 @@
 use std::io::{self, Write};
 
 use crossterm::event::{self, Event as TerminalEvent, KeyCode};
-use forms::widgets::{FormsWidget, Theme};
+use forms::render::{FormsWidget, Theme};
 use forms::{
     Builder, Button, ButtonRole, Choice, Control, Event, Input, Key, MemoryProvider, Modal,
     ModalStyle, Session, Value,

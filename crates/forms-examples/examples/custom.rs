@@ -14,7 +14,7 @@
 mod support;
 
 use forms::RowView;
-use forms::widgets::{Painters, Theme};
+use forms::render::{Painters, Theme};
 use forms::{Builder, Control, Decoration, Field, Handler, Key, Registry, Session};
 use forms_examples::HANDLE;
 use ratatui_core::buffer::Buffer;

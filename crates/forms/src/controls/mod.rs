@@ -9,8 +9,15 @@
 //! A handler formats the value column, declares how the value is drawn and
 //! changes an edit state from one [`Input`]. It never draws and never touches
 //! a store.
+//!
+//! | Folder | Handlers |
+//! | --- | --- |
+//! | `standard` | The controls a HII form states: heading, text, link, action, toggle, choice, number, text input, ordered list, reset, and the inert row of an unknown opcode |
+//! | `extras` | The controls only this crate defines: slider, progress, divider |
 
 mod builtin;
+mod extras;
+mod standard;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
@@ -208,7 +215,7 @@ impl Registry {
     /// ```
     /// use forms::Registry;
     ///
-    /// assert!(forms::Registry::builtin().contains(forms::ext::kind::TOGGLE));
+    /// assert!(forms::Registry::builtin().contains(forms::controls::kind::TOGGLE));
     /// ```
     pub fn builtin() -> Self {
         let mut registry = Self {
@@ -225,7 +232,7 @@ impl Registry {
     /// # Examples
     ///
     /// ```
-    /// use forms::ext::kind;
+    /// use forms::controls::kind;
     /// use forms::{Decoration, Field, Handler, Registry};
     ///
     /// struct Bare;
@@ -246,7 +253,7 @@ impl Registry {
     /// # Examples
     ///
     /// ```
-    /// use forms::{Registry, ext::kind};
+    /// use forms::{Registry, controls::kind};
     ///
     /// assert!(Registry::builtin().contains(kind::NUMBER));
     /// assert!(!Registry::builtin().contains(forms::Key(1)));

@@ -1,7 +1,7 @@
 //! A browser front end for a [`forms`] session.
 //!
 //! The crate runs a real [`forms::Session`] and draws its [`forms::View`] with
-//! [`forms::widgets::FormsWidget`] through `mousefood` and `embedded-graphics`,
+//! [`forms::render::FormsWidget`] through `mousefood` and `embedded-graphics`,
 //! exactly as a firmware front end does. The only difference is the pixel
 //! target: a RAM framebuffer instead of a graphics output. A page therefore
 //! looks in a browser exactly as it looks on the panel.
@@ -17,7 +17,7 @@
 //! # Examples
 //!
 //! ```
-//! use forms::widgets::FormsWidget;
+//! use forms::render::FormsWidget;
 //! use forms_sim::{Config, Screen};
 //!
 //! let config = Config { panel: (800, 600), ..Config::default() };
@@ -43,8 +43,8 @@
 use core::convert::Infallible;
 
 use forms::View;
-use forms::page::{Margins, Placement, placement};
-use forms::widgets::{FormsWidget, Theme};
+use forms::render::{FormsWidget, Theme};
+use forms::render::{Margins, Placement, placement};
 use mousefood::embedded_graphics::Pixel;
 use mousefood::embedded_graphics::draw_target::DrawTarget;
 use mousefood::embedded_graphics::geometry::{Dimensions, Point, Size};
@@ -200,7 +200,7 @@ impl Screen {
     ///
     /// ```
     /// let screen = forms_sim::Screen::new(forms_sim::Config::default());
-    /// assert_eq!(screen.theme(), &forms::widgets::Theme::default());
+    /// assert_eq!(screen.theme(), &forms::render::Theme::default());
     /// ```
     #[must_use]
     pub fn theme(&self) -> &Theme {
@@ -212,7 +212,7 @@ impl Screen {
     /// # Examples
     ///
     /// ```
-    /// use forms::widgets::{Alignment, Theme};
+    /// use forms::render::{Alignment, Theme};
     ///
     /// let mut screen = forms_sim::Screen::new(forms_sim::Config::default());
     /// let theme = Theme {

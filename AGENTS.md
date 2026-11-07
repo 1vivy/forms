@@ -24,11 +24,11 @@ Cargo writes to `out/cargo` (`.cargo/config.toml`).
 
 | Item | Rule |
 | --- | --- |
-| `forms::model` | `core` + `alloc` only. No firmware, no HII type, no drawing. |
-| `forms::ext` | Handlers and the registry. `core` + `alloc` only, no drawing. |
-| `forms::session` | `core` + `alloc` only. Turns inputs into provider calls and views. Draws nothing. |
+| `forms::model` | `core` + `alloc` only. No firmware, no HII type, no drawing. One file per concept. |
+| `forms::controls` | Handlers and the registry. `core` + `alloc` only, no drawing. A control a HII form states goes in `standard/`; a forms-only control goes in `extras/` and gets a row in the `hii-ifr` degrade table. |
+| `forms::session` | `core` + `alloc` only. Turns inputs into provider calls and views. Draws nothing. `navigate`, `edit` and `view` split one `impl Session`. |
 | `forms::modal` | `core` + `alloc` only. Holds no display code. |
-| `forms::widgets` | Adds `ratatui-core` and `ratatui-widgets` only. Holds no session state and no firmware call. |
+| `forms::render` | Adds `ratatui-core` and `ratatui-widgets` only. Holds no session state and no firmware call. Page placement lives here. |
 | `forms-uefi` | Display and input only. Holds no page, no HII type and no log line. |
 | `hii-abi` | UEFI HII package and IFR layouts. No dependency. |
 | `hii-ifr` | IFR and HII package codec, plus the HII export descriptor. Depends on `forms` and `hii-abi`. |

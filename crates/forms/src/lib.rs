@@ -8,11 +8,20 @@
 //! - [`Builder`] allocates keys and builds a [`FormSet`] as data.
 //! - [`Session`] turns [`Input`] into store or provider calls and produces a
 //!   [`View`] that a renderer draws. It draws nothing itself.
-//! - [`Registry`] holds the handlers of the control kinds. Built-in kinds use
-//!   the same handlers, so a consumer replaces or adds a control without
+//! - [`Registry`] holds the handlers of the control kinds ([`controls`]). Built-in
+//!   kinds use the same handlers, so a consumer replaces or adds a control without
 //!   forking the crate.
 //! - [`Modal`] is a general modal decision with its own buttons and roles.
-//! - [`widgets`] draws a view and a modal through ratatui.
+//! - [`render`] draws a view and a modal through ratatui, places the page on a
+//!   display, and holds the [`render::Theme`].
+//!
+//! | Module | Layer |
+//! | --- | --- |
+//! | [`model`] | The description: everything a HII form set can state, in forms' own types |
+//! | [`session`] | Navigation, editing, conditions, validation, defaults, refresh |
+//! | [`controls`] | Handlers: `standard` (HII controls) and `extras` (forms-only controls) |
+//! | [`modal`] | Modal decisions |
+//! | [`render`] | Drawing, theme and page placement; no firmware or display binding |
 //!
 //! No type in this crate carries a firmware identity, a firmware storage
 //! location or a firmware opcode. A HII adapter maps the set to and from that
@@ -39,14 +48,13 @@
 
 extern crate alloc;
 
-pub mod ext;
+pub mod controls;
 pub mod modal;
 pub mod model;
-pub mod page;
+pub mod render;
 pub mod session;
-pub mod widgets;
 
-pub use ext::{Decoration, EditState, EditStep, Field, Handler, Registry};
+pub use controls::{Decoration, EditState, EditStep, Field, Handler, Registry};
 pub use modal::{Button, ButtonRole, Modal, ModalOutcome, ModalStyle, Progress};
 pub use model::{
     Builder, Choice, Control, DefaultSet, Error, Expr, FieldBinding, FieldValue, FormSet, Key,

@@ -11,7 +11,7 @@ use ratatui_widgets::{block::Block, clear::Clear};
 
 use crate::{
     Decoration, Editor, EditorKind, Key, RowView, Truncation, View,
-    widgets::{KeyNames, ModalWidget, Theme},
+    render::{KeyNames, ModalWidget, Theme},
 };
 
 /// Draws the value area of a consumer decoration.
@@ -25,7 +25,7 @@ pub type Paint = fn(&[u8], &RowView, Rect, &mut Buffer, &Theme);
 /// # Examples
 ///
 /// ```
-/// use forms::widgets::Painters;
+/// use forms::render::Painters;
 ///
 /// assert!(Painters::new().get(forms::Key(1)).is_none());
 /// ```
@@ -40,7 +40,7 @@ impl Painters {
     /// # Examples
     ///
     /// ```
-    /// let _painters = forms::widgets::Painters::new();
+    /// let _painters = forms::render::Painters::new();
     /// ```
     pub fn new() -> Self {
         Self::default()
@@ -51,11 +51,11 @@ impl Painters {
     /// # Examples
     ///
     /// ```
-    /// use forms::widgets::Painters;
+    /// use forms::render::Painters;
     /// use ratatui_core::buffer::Buffer;
     /// use ratatui_core::layout::Rect;
     ///
-    /// fn paint(_data: &[u8], _row: &forms::RowView, _area: Rect, _buf: &mut Buffer, _theme: &forms::widgets::Theme) {}
+    /// fn paint(_data: &[u8], _row: &forms::RowView, _area: Rect, _buf: &mut Buffer, _theme: &forms::render::Theme) {}
     /// let mut painters = Painters::new();
     /// painters.insert(forms::Key(4), paint);
     /// assert!(painters.get(forms::Key(4)).is_some());
@@ -69,7 +69,7 @@ impl Painters {
     /// # Examples
     ///
     /// ```
-    /// assert!(forms::widgets::Painters::new().get(forms::Key(1)).is_none());
+    /// assert!(forms::render::Painters::new().get(forms::Key(1)).is_none());
     /// ```
     pub fn get(&self, kind: Key) -> Option<Paint> {
         self.map.get(&kind).copied()
@@ -92,7 +92,7 @@ impl Painters {
 ///
 /// ```
 /// use forms::View;
-/// use forms::widgets::FormsWidget;
+/// use forms::render::FormsWidget;
 /// use ratatui_core::buffer::Buffer;
 /// use ratatui_core::layout::Rect;
 /// use ratatui_core::widgets::Widget;
@@ -140,7 +140,7 @@ impl<'a> FormsWidget<'a> {
     /// # Examples
     ///
     /// ```
-    /// use forms::widgets::{FormsWidget, Theme};
+    /// use forms::render::{FormsWidget, Theme};
     ///
     /// let view = forms::View {
     ///     path: Vec::new(),
@@ -165,7 +165,7 @@ impl<'a> FormsWidget<'a> {
     /// # Examples
     ///
     /// ```
-    /// use forms::widgets::{FormsWidget, Painters};
+    /// use forms::render::{FormsWidget, Painters};
     ///
     /// let view = forms::View {
     ///     path: Vec::new(),
@@ -722,8 +722,8 @@ fn put_fit(buf: &mut Buffer, area: Rect, text: &str, style: Style, row: &RowView
         .unwrap_or(0)
         .min(area.width);
     let left = match theme.value_alignment {
-        crate::widgets::Alignment::Left => area.x,
-        crate::widgets::Alignment::Right => area.right() - width,
+        crate::render::Alignment::Left => area.x,
+        crate::render::Alignment::Right => area.right() - width,
     };
     put(buf, Rect::new(left, area.y, width, 1), &text, style);
 }
@@ -794,7 +794,7 @@ fn wrap(text: &str, width: u16) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::FormsWidget;
-    use crate::widgets::{Alignment, Painters, Theme};
+    use crate::render::{Alignment, Painters, Theme};
     use crate::{Decoration, Presentation, RowView, Truncation, View};
     use alloc::string::String;
     use alloc::vec;
@@ -966,7 +966,7 @@ mod tests {
 #[cfg(test)]
 mod slider_tests {
     use super::FormsWidget;
-    use crate::widgets::Theme;
+    use crate::render::Theme;
     use crate::{Decoration, Presentation, RowView, Truncation, View};
     use alloc::string::String;
     use alloc::vec;

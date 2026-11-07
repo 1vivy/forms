@@ -13,7 +13,7 @@ use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
 };
 
-use crate::{ButtonRole, Modal, ModalStyle, Progress, widgets::Theme};
+use crate::{ButtonRole, Modal, ModalStyle, Progress, render::Theme};
 
 /// Draws a [`Modal`] as a centered box with its buttons.
 ///
@@ -25,7 +25,7 @@ use crate::{ButtonRole, Modal, ModalStyle, Progress, widgets::Theme};
 ///
 /// ```
 /// use forms::{Button, ButtonRole, Modal, ModalStyle};
-/// use forms::widgets::ModalWidget;
+/// use forms::render::ModalWidget;
 /// use ratatui_core::buffer::Buffer;
 /// use ratatui_core::layout::Rect;
 /// use ratatui_core::widgets::Widget;
@@ -48,7 +48,7 @@ impl<'a> ModalWidget<'a> {
     ///
     /// ```
     /// use forms::{Modal, ModalStyle};
-    /// use forms::widgets::ModalWidget;
+    /// use forms::render::ModalWidget;
     ///
     /// let modal = Modal::new(ModalStyle::Info, "T", "B");
     /// let _widget = ModalWidget::new(&modal);
@@ -67,7 +67,7 @@ impl<'a> ModalWidget<'a> {
     ///
     /// ```
     /// use forms::{Modal, ModalStyle};
-    /// use forms::widgets::{ModalWidget, Theme};
+    /// use forms::render::{ModalWidget, Theme};
     ///
     /// let modal = Modal::new(ModalStyle::Info, "T", "B");
     /// let _widget = ModalWidget::new(&modal).with_theme(Theme::default());

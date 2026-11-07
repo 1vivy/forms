@@ -11,7 +11,7 @@ a `Shell`, then calls `run` or `run_with`.
 - The display is the graphics output when the firmware publishes one. A mode
   without a usable frame buffer, or no graphics output at all, falls back to
   the inherited text console.
-- The page keeps the margins of `forms::page::Margins::default()`, which is one
+- The page keeps the margins of `forms::render::Margins::default()`, which is one
   tenth of the display on every edge. On the graphics output it uses the
   largest integer scale of a 6 by 10 font cell that keeps 40 columns and 16
   rows.

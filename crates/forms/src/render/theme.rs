@@ -22,7 +22,7 @@ pub enum Alignment {
 /// # Examples
 ///
 /// ```
-/// use forms::widgets::Theme;
+/// use forms::render::Theme;
 /// use ratatui_core::style::Color;
 ///
 /// let mut theme = Theme::default();
@@ -103,7 +103,7 @@ pub struct Theme {
 /// # Examples
 ///
 /// ```
-/// use forms::widgets::KeyNames;
+/// use forms::render::KeyNames;
 ///
 /// let phone = KeyNames::volume_and_power();
 /// assert_eq!(phone.back, None);
@@ -135,7 +135,7 @@ impl KeyNames {
     /// # Examples
     ///
     /// ```
-    /// assert_eq!(forms::widgets::KeyNames::volume_and_power().select, "Power");
+    /// assert_eq!(forms::render::KeyNames::volume_and_power().select, "Power");
     /// ```
     #[must_use]
     pub const fn volume_and_power() -> Self {
@@ -199,7 +199,7 @@ impl Theme {
     /// # Examples
     ///
     /// ```
-    /// use forms::{Decoration, widgets::Theme};
+    /// use forms::{Decoration, render::Theme};
     ///
     /// let theme = Theme::default();
     /// assert_eq!(theme.style(Decoration::Heading), theme.style(Decoration::Heading));
@@ -226,7 +226,7 @@ impl Theme {
     /// # Examples
     ///
     /// ```
-    /// let style = forms::widgets::Theme::default().page();
+    /// let style = forms::render::Theme::default().page();
     /// assert_eq!(style.fg, Some(ratatui_core::style::Color::Gray));
     /// ```
     pub fn page(&self) -> Style {

@@ -8,7 +8,7 @@
 use std::io::{self, Write};
 
 use crossterm::event::{self, Event as TerminalEvent, KeyCode};
-use forms::widgets::{FormsWidget, Painters, Theme};
+use forms::render::{FormsWidget, Painters, Theme};
 use forms::{Event, Input, Provider, Session, View};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;

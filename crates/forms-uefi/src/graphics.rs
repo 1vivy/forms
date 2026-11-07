@@ -54,17 +54,17 @@ pub(crate) struct Page {
 
 /// Returns the page of a mode of `mode` pixels.
 ///
-/// The margins come from [`forms::page::Margins::default`], which keeps one
+/// The margins come from [`forms::render::Margins::default`], which keeps one
 /// tenth on every edge. The scale is the largest integer that keeps
 /// [`COLUMNS`] columns and [`ROWS`] rows; a mode too small for both keeps a
 /// scale of one. The page is centred in the area inside the margins.
 pub(crate) fn page(mode: PixelSize) -> Page {
-    let placement = forms::page::placement(
+    let placement = forms::render::placement(
         (mode.width, mode.height),
         (CELL.width, CELL.height),
         COLUMNS,
         ROWS,
-        forms::page::Margins::default(),
+        forms::render::Margins::default(),
     );
     Page {
         origin: Point::new(placement.left as i32, placement.top as i32),
