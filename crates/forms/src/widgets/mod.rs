@@ -1,13 +1,13 @@
-//! Setup-page rendering for a [`View`](crate::View).
+//! Setup-page rendering for a [`View`](crate::View) and a [`Modal`](crate::Modal).
 //!
-//! This module draws a page the way a PC setup page looks: a title bar, a
-//! breadcrumb path, a row list with the prompt on the left and the value on the
-//! right, a selection highlight, a help pane, a message line, a key-hint footer
-//! and a centered editor as a modal.
+//! This module draws a page with a title bar, a breadcrumb path, a row list
+//! with the label on the left and the value on the right, a selection
+//! highlight, a help pane, a message line, a key-hint footer, an editor and a
+//! modal. It reads the [`Decoration`](crate::Decoration) of each row from the
+//! session, so a consumer control draws through a registered [`Paint`].
 //!
-//! It needs allocation only. The same widget therefore serves a UEFI
-//! application and a Linux program; only the ratatui backend and the input
-//! source differ.
+//! It needs allocation only, so the same widget serves a UEFI application and
+//! a Linux program. Only the ratatui backend and the input source differ.
 //!
 //! # Examples
 //!
@@ -23,10 +23,10 @@
 //!     title: "Setup".into(),
 //!     rows: Vec::new(),
 //!     selected: None,
-//!     help: "Choose a formset.".into(),
+//!     help: "Choose a set.".into(),
 //!     editor: None,
 //!     message: None,
-//!     popup: None,
+//!     modal: None,
 //! };
 //! let area = Rect::new(0, 0, 40, 12);
 //! let mut buffer = Buffer::empty(area);
@@ -34,10 +34,10 @@
 //! assert_eq!(buffer[(0, 0)].symbol(), "┌");
 //! ```
 
-mod popup;
+mod modal;
+mod page;
 mod theme;
-mod widget;
 
-pub use popup::PopupWidget;
+pub use modal::ModalWidget;
+pub use page::{FormsWidget, Paint, Painters};
 pub use theme::Theme;
-pub use widget::FormsWidget;

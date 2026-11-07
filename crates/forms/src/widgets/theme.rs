@@ -1,12 +1,13 @@
-//! Colours and styles for the setup page.
+//! Colours, styles and presentation defaults of a page.
 
-use crate::RowKind;
+use crate::{Decoration, Truncation};
 use ratatui_core::style::{Color, Modifier, Style};
 
-/// The colours and styles of a setup page.
+/// The colours, styles and layout defaults of a page.
 ///
-/// [`Theme::default`] is a dark setup page with a light selection bar. A front
-/// end may start from the default and change single fields.
+/// A consumer starts from [`Theme::default`] and changes single fields. The
+/// widget reads every field per draw, so a changed theme takes effect on the
+/// next frame.
 ///
 /// # Examples
 ///
@@ -16,7 +17,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 ///
 /// let mut theme = Theme::default();
 /// theme.title = Color::Red;
-/// assert_eq!(theme.title, Color::Red);
+/// assert_eq!(theme.split, 50);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theme {
@@ -30,30 +31,50 @@ pub struct Theme {
     pub title: Color,
     /// The colour of headings.
     pub heading: Color,
-    /// Draws a horizontal rule after each heading when `true`.
-    pub heading_rule: bool,
-    /// The colour of read-only information.
+    /// The colour of information.
     pub info: Color,
-    /// The colour of a link to another page.
+    /// The colour of links and the root list.
     pub link: Color,
-    /// The colour of the help text.
+    /// The colour of help text.
     pub help: Color,
     /// The colour of a message.
     pub message: Color,
-    /// The colour of the key hints.
+    /// The colour of key hints.
     pub hint: Color,
     /// The style of the selected row.
     pub selection: Style,
-    /// The style of a row that cannot be selected.
+    /// The style of a row that accepts no change.
     pub disabled: Style,
-    /// The style of a row with an unsupported condition.
+    /// The style of a row with an unreadable value or condition.
     pub uncertain: Style,
-    /// The title colour of an information popup.
-    pub popup_info: Color,
-    /// The title colour of a warning popup.
-    pub popup_warning: Color,
-    /// The title colour of an error popup.
-    pub popup_error: Color,
+    /// The title colour of an information modal.
+    pub modal_info: Color,
+    /// The title colour of a warning modal.
+    pub modal_warning: Color,
+    /// The title colour of a danger modal.
+    pub modal_danger: Color,
+    /// The title colour of an error modal.
+    pub modal_error: Color,
+    /// Draws a rule after a heading.
+    pub heading_rule: bool,
+    /// The label column as a percentage of the width.
+    pub split: u16,
+    /// The largest label width in cells, or 0 for the split width.
+    pub label_limit: u16,
+    /// The overflow policy when a row does not choose one.
+    pub truncation: Truncation,
+    /// The mark of a cut value.
+    pub clip: &'static str,
+    /// The mark before an enabled switch.
+    pub toggle_on: &'static str,
+    /// The mark before a disabled switch.
+    pub toggle_off: &'static str,
+    /// The character of a divider.
+    pub divider: char,
+    /// The character of a filled bar cell.
+    pub bar_full: char,
+    /// The character of an empty bar cell.
+    pub bar_empty: char,
 }
 
 impl Default for Theme {
@@ -64,7 +85,6 @@ impl Default for Theme {
             border: Color::LightBlue,
             title: Color::White,
             heading: Color::Yellow,
-            heading_rule: true,
             info: Color::Gray,
             link: Color::LightCyan,
             help: Color::Gray,
@@ -78,26 +98,46 @@ impl Default for Theme {
             uncertain: Style::new()
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::ITALIC),
-            popup_info: Color::LightCyan,
-            popup_warning: Color::LightYellow,
-            popup_error: Color::LightRed,
+            modal_info: Color::LightCyan,
+            modal_warning: Color::LightYellow,
+            modal_danger: Color::LightRed,
+            modal_error: Color::LightRed,
+            heading_rule: true,
+            split: 50,
+            label_limit: 0,
+            truncation: Truncation::End,
+            clip: "~",
+            toggle_on: "[X] ",
+            toggle_off: "[ ] ",
+            divider: '─',
+            bar_full: '█',
+            bar_empty: '░',
         }
     }
 }
 
 impl Theme {
-    /// Returns the base style of a row of this kind.
-    pub(crate) fn row_style(&self, kind: RowKind) -> Style {
-        let colour = match kind {
-            RowKind::FormSet => self.link,
-            RowKind::Heading => self.heading,
-            RowKind::Info => self.info,
-            RowKind::Link | RowKind::Back => self.link,
-            RowKind::Action | RowKind::Toggle | RowKind::Choice => self.foreground,
-            RowKind::Number | RowKind::Text => self.foreground,
+    /// Returns the base style of a decoration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{Decoration, widgets::Theme};
+    ///
+    /// let theme = Theme::default();
+    /// assert_eq!(theme.style(Decoration::Heading), theme.style(Decoration::Heading));
+    /// ```
+    pub fn style(&self, decoration: Decoration) -> Style {
+        let colour = match &decoration {
+            Decoration::Heading => self.heading,
+            Decoration::Rule => self.border,
+            Decoration::Bar { .. } | Decoration::Slider { .. } => self.link,
+            Decoration::Toggle(_) | Decoration::Plain | Decoration::Custom { .. } => {
+                self.foreground
+            }
         };
         let style = Style::new().fg(colour);
-        if matches!(kind, RowKind::Heading) {
+        if matches!(decoration, Decoration::Heading) {
             style.add_modifier(Modifier::BOLD)
         } else {
             style
@@ -105,7 +145,14 @@ impl Theme {
     }
 
     /// Returns the style of the page background.
-    pub(crate) fn page(&self) -> Style {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let style = forms::widgets::Theme::default().page();
+    /// assert_eq!(style.fg, Some(ratatui_core::style::Color::Gray));
+    /// ```
+    pub fn page(&self) -> Style {
         Style::new().fg(self.foreground).bg(self.background)
     }
 }
