@@ -56,8 +56,53 @@ use mousefood::{
 use ratatui_core::terminal::Terminal;
 use ratatui_core::widgets::Widget;
 
+mod sim;
+
 #[cfg(feature = "demo")]
 pub mod demo;
+
+pub use sim::{Defaults, SHARED, Sim, describe, guid, input, title};
+
+/// Returns a two-row formset for examples and tests.
+///
+/// # Examples
+///
+/// ```
+/// let set = forms_sim::sample();
+/// assert_eq!(set.forms.len(), 1);
+/// ```
+#[must_use]
+pub fn sample() -> forms::FormSet {
+    use forms::{Form, FormId, FormSet, Statement};
+    FormSet {
+        guid: [0x33; 16],
+        title: String::from("Sample"),
+        help: String::from("A sample page"),
+        class_guids: Vec::new(),
+        varstores: Vec::new(),
+        forms: vec![Form {
+            id: FormId(1),
+            title: String::from("Sample"),
+            items: vec![
+                Statement::Subtitle {
+                    text: String::from("Rows"),
+                }
+                .into(),
+                Statement::Checkbox {
+                    question: forms::Question {
+                        id: forms::QuestionId(1),
+                        prompt: String::from("Row"),
+                        help: String::from("A row"),
+                        storage: forms::Storage::None,
+                        flags: forms::QuestionFlags(forms::QuestionFlags::CALLBACK.0),
+                    },
+                    default: false,
+                }
+                .into(),
+            ],
+        }],
+    }
+}
 
 /// One panel and the page placement on it.
 ///

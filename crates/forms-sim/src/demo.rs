@@ -15,7 +15,7 @@
 
 use core::cell::RefCell;
 
-use forms::{Event, Input, Session};
+use forms::{Input, Session};
 use forms_examples::{SET_GUID, SettingsProvider, formset};
 
 use crate::{Config, Screen};
@@ -64,60 +64,7 @@ impl Demo {
     }
 }
 
-/// Returns a short line that states what one event changed.
-///
-/// # Examples
-///
-/// ```
-/// use forms::Event;
-/// use forms_sim::demo::describe;
-///
-/// assert_eq!(describe(&Event::None), "");
-/// assert_eq!(describe(&Event::Exit), "exit");
-/// ```
-#[must_use]
-pub fn describe(event: &Event) -> String {
-    match event {
-        Event::None => String::new(),
-        Event::Changed => String::from("changed"),
-        Event::Exit => String::from("exit"),
-        Event::Response(request) => format!("request: {request:?}"),
-        Event::Popup(selection) => format!("popup: {selection:?}"),
-        Event::Failed(error) => format!("failed: {}", error.reason),
-    }
-}
-
-/// Returns the input of one browser key stroke.
-///
-/// `code` is `0` for Up, `1` for Down, `2` for Left, `3` for Right, `4` for
-/// Home, `5` for Enter, `6` for Back, `7` for Erase and `8` for the character
-/// in `character`. Every other code returns `None`.
-///
-/// # Examples
-///
-/// ```
-/// use forms::Input;
-/// use forms_sim::demo::input;
-///
-/// assert_eq!(input(0, 0), Some(Input::Up));
-/// assert_eq!(input(8, u32::from(b'k')), Some(Input::Char('k')));
-/// assert_eq!(input(99, 0), None);
-/// ```
-#[must_use]
-pub fn input(code: u32, character: u32) -> Option<Input> {
-    Some(match code {
-        0 => Input::Up,
-        1 => Input::Down,
-        2 => Input::Left,
-        3 => Input::Right,
-        4 => Input::Home,
-        5 => Input::Enter,
-        6 => Input::Back,
-        7 => Input::Erase,
-        8 => Input::Char(char::from_u32(character)?),
-        _ => return None,
-    })
-}
+pub use crate::{describe, input};
 
 /// Opens the demo page and draws its first view.
 ///

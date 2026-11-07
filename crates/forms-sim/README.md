@@ -31,21 +31,36 @@ firmware, without an emulator and without a build of the consuming image.
 
 ## Use from another crate
 
-A consumer supplies its own `forms::FormSet` and `forms::Provider`, drives the
-session, and draws each view on a `Screen`:
+The crate is a path dependency for a page that lives outside `forms`:
 
-```rust,ignore
-use forms::{Input, Session};
-use forms_sim::{Config, Screen};
-
-let mut session = Session::new(vec![(HANDLE, formset)]);
-let mut provider = MyProvider::new();
-let mut screen = Screen::new(Config::default());
-
-let view = session.view(&mut provider);
-screen.draw(true, &view)?;
-let event = session.input(Input::Down, &mut provider);
+```toml
+forms-sim = { path = "…/forms/crates/forms-sim" }
 ```
+
+A consumer supplies its own `forms::FormSet` and `forms::Provider`. `Sim` joins
+them with a `Screen` and drives one key stroke at a time:
+
+```rust
+use forms_sim::{Config, Defaults, Sim};
+
+let set = my_formset();
+let mut sim = Sim::new(&set, Defaults::new(&set), forms_sim::SHARED, Config::default());
+let event = sim.press(forms::Input::Down);
+assert_eq!(sim.notice(), "changed");
+let _ = sim.draw();
+```
+
+| Item | Content |
+| --- | --- |
+| `Sim` | A session, a provider and a screen: `press`, `draw`, `view`, `notice`, `screen` |
+| `Defaults` | A provider that answers every question from the formset defaults |
+| `describe` | One line for a `forms::Event` |
+| `input` | A `forms::Input` for a browser key code |
+| `sample` | A two-row formset for examples and tests |
+
+A page that opens confirmation popups keeps its own policy. It drives
+`forms::Session` and its provider directly and draws the view that
+`Session::view` returns on a `Screen`, as the ODP setup front end does.
 
 The consumer sets the panel and the placement. A consumer that draws on a phone
 panel keeps `Config::default()`, which is 1272 by 2772 pixels with a cell of 6 by
