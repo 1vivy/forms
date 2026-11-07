@@ -447,18 +447,24 @@ unsafe extern "efiapi" fn callback<P: Provider>(
         return Status::NOT_FOUND;
     };
     let answer = provider.action(context.provider_handle, context.prepared.formset(), &row);
-    // A write reports its request first, because the browser calls Callback
-    // after the value changed.
-    let pending = context.pending.replace(0);
+    // A write records its request before the browser calls back, so it wins.
+    let page = context
+        .prepared
+        .formset()
+        .pages
+        .first()
+        .map_or(Key::default(), |page| page.key);
+    let recorded = context.pending.replace(0);
+    let pending = if recorded == 0 {
+        None
+    } else {
+        crate::map::map_request(recorded as u64, page).ok()
+    };
     let (value, status) = match answer {
-        Ok(request) => {
-            let value = if pending != 0 {
-                pending
-            } else {
-                crate::map::request_value(request) as usize
-            };
-            (value, Status::SUCCESS)
-        }
+        Ok(request) => (
+            crate::map::request_value(crate::map::reported(pending, request)) as usize,
+            Status::SUCCESS,
+        ),
         Err(error) => (
             0,
             Status(usize::try_from(error.code).unwrap_or(Status::DEVICE_ERROR.0)),

@@ -265,10 +265,50 @@ pub fn selection_of(kind: PopupKind, index: usize) -> HiiPopupSelection {
     }
 }
 
+/// Returns the request that the browser reports for one callback.
+///
+/// A value write records its request before the browser calls back, so that
+/// request wins; otherwise the request of the action applies.
+///
+/// # Examples
+///
+/// ```
+/// use forms::Request;
+///
+/// assert_eq!(
+///     hii_uefi::reported(Some(Request::Restart), Request::None),
+///     Request::Restart
+/// );
+/// assert_eq!(hii_uefi::reported(None, Request::Reconnect), Request::Reconnect);
+/// ```
+pub fn reported(pending: Option<Request>, driver: Request) -> Request {
+    pending.unwrap_or(driver)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{map_request, request_for, request_value};
+    use super::{map_request, reported, request_for, request_value};
     use forms::{Key, Request, Scope};
+
+    #[test]
+    fn a_recorded_request_wins_over_the_driver() {
+        assert_eq!(
+            reported(Some(Request::Reconnect), Request::None),
+            Request::Reconnect
+        );
+        assert_eq!(
+            reported(
+                Some(Request::Restart),
+                Request::Apply {
+                    scope: Scope::Set,
+                    leave: true
+                }
+            ),
+            Request::Restart
+        );
+        assert_eq!(reported(None, Request::Restart), Request::Restart);
+        assert_eq!(reported(None, Request::None), Request::None);
+    }
 
     #[test]
     fn a_question_flag_wins_over_the_driver_request() {
