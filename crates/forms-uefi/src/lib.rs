@@ -28,7 +28,7 @@
 //!
 //! ```no_run
 //! use forms::{Event, Provider, Session};
-//! use forms_uefi::{Shell, Turn};
+//! use forms_uefi::{Display, Shell, Turn};
 //!
 //! struct Timer;
 //!
@@ -36,7 +36,7 @@
 //! where
 //!     P: Provider<Handle = u32>,
 //! {
-//!     fn opened(&mut self, _session: &mut Session<u32>, _provider: &mut P, _display: &str) {}
+//!     fn opened(&mut self, _session: &mut Session<u32>, _provider: &mut P, _display: &Display) {}
 //!
 //!     fn turn(
 //!         &mut self,
