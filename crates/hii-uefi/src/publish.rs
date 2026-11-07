@@ -1,28 +1,25 @@
 //! Publication of a provider through UEFI HII Config Access.
 //!
-//! [`Registration`] encodes one `forms::FormSet` with one buffer variable
-//! store, creates a driver handle with a vendor device path, adds the package
-//! list to the HII database and installs `EFI_HII_CONFIG_ACCESS_PROTOCOL` on
-//! that handle.
+//! [`Registration`] encodes one form set with one buffer variable store,
+//! creates a driver handle with a vendor device path, adds the package list to
+//! the HII database and installs `EFI_HII_CONFIG_ACCESS_PROTOCOL` on that
+//! handle.
 //!
 //! The protocol context lives in firmware pool memory. Firmware keeps its
 //! address after a failed removal, so no Rust allocation can become stale.
-//! The provider is dropped when removal succeeds.
 //!
-//! `ExtractConfig` reads every requested question through `Provider::read`.
-//! `RouteConfig` writes changed questions through `Provider::write` and
-//! returns the provider status on refusal. `Callback` runs an action question
-//! through `Provider::action` and reports the provider request to the browser.
-//! It also commits the whole formset when the browser submits it.
+//! `ExtractConfig` reads the requested questions through [`forms::Provider`].
+//! `RouteConfig` writes changed questions through the same trait. `Callback`
+//! runs an action question through [`forms::Provider::action`].
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 use core::{
-    cell::{Cell, RefCell, RefMut},
+    cell::RefCell,
     mem::{align_of, size_of},
     ptr::{self, NonNull},
 };
 
-use forms::{FormSet, Provider, Scope, Storage};
+use forms::{FormSet, Key, Provider, Request};
 use uefi_raw::protocol::device_path::DevicePathProtocol;
 use uefi_raw::protocol::hii::config::{BrowserAction, HiiConfigAccessProtocol};
 use uefi_raw::protocol::hii::database::HiiDatabaseProtocol;
@@ -34,7 +31,7 @@ use uefi_raw::{Char16, Handle, Status};
 
 use crate::producer::{ConfigError, PreparedFormSet};
 use crate::raw::Boot;
-use crate::shape;
+use crate::text;
 
 /// The vendor device path: type 1, sub-type 4, GUID, end node.
 const PATH_LENGTH: usize = 24;
@@ -43,10 +40,6 @@ const PATH_LENGTH: usize = 24;
 const VENDOR_NODE_LENGTH: u8 = 20;
 
 /// The protocol context of one registration.
-///
-/// `access` is the first field, so the protocol pointer and the context
-/// pointer have the same address. The type is `repr(C)` because firmware reads
-/// the protocol table through the first field.
 #[repr(C)]
 struct Context<P: Provider> {
     access: HiiConfigAccessProtocol,
@@ -55,8 +48,6 @@ struct Context<P: Provider> {
     prepared: PreparedFormSet,
     path: [u8; PATH_LENGTH],
     boot: Boot,
-    /// The request of the last value write, for the next `Callback` call.
-    pending: Cell<BrowserActionRequest>,
 }
 
 /// One published package list with its Config Access protocol.
@@ -72,13 +63,14 @@ pub struct Registration<P: Provider + 'static> {
     context: NonNull<Context<P>>,
     handle: Handle,
     package: HiiHandle,
-    path_installed: bool,
-    access_installed: bool,
+    installed: bool,
     removed: bool,
 }
 
 impl<P: Provider + 'static> Registration<P> {
-    /// Publishes one formset over the given provider.
+    /// Publishes one form set over the given provider.
+    ///
+    /// The GUID identifies the form set in the HII database.
     ///
     /// # Safety
     ///
@@ -93,14 +85,14 @@ impl<P: Provider + 'static> Registration<P> {
     pub unsafe fn new(
         boot: Boot,
         set: FormSet,
+        guid: [u8; 16],
         provider: P,
         provider_handle: P::Handle,
     ) -> Result<Self, Status> {
         let database = boot
             .locate::<HiiDatabaseProtocol>(&HiiDatabaseProtocol::GUID)
             .ok_or(Status::NOT_FOUND)?;
-        let guid = set.guid;
-        let prepared = PreparedFormSet::new(set).map_err(|_| Status::INVALID_PARAMETER)?;
+        let prepared = PreparedFormSet::new(set, guid).map_err(|_| Status::INVALID_PARAMETER)?;
         let packages = prepared
             .package_list()
             .map_err(|_| Status::INVALID_PARAMETER)?;
@@ -118,8 +110,8 @@ impl<P: Provider + 'static> Registration<P> {
             .ok_or(Status::OUT_OF_RESOURCES)?;
         let address = align_pointer(base.as_ptr(), align);
         let context = NonNull::new(address.cast::<Context<P>>()).ok_or(Status::OUT_OF_RESOURCES)?;
-        // SAFETY: The pool allocation is at least `size + align` bytes and the
-        // aligned address keeps `size` bytes inside it. Nothing is written yet.
+        // SAFETY: The pool allocation keeps `size` bytes at the aligned
+        // address. Nothing is written yet.
         unsafe {
             context.as_ptr().write(Context {
                 access: HiiConfigAccessProtocol {
@@ -132,12 +124,9 @@ impl<P: Provider + 'static> Registration<P> {
                 prepared,
                 path,
                 boot,
-                pending: Cell::new(BrowserActionRequest::NONE),
             });
         }
 
-        // SAFETY: The firmware handle may be written.
-        let mut handle: Handle = ptr::null_mut();
         let mut registration = Self {
             boot,
             database,
@@ -145,17 +134,16 @@ impl<P: Provider + 'static> Registration<P> {
             context,
             handle: ptr::null_mut(),
             package: ptr::null_mut(),
-            path_installed: false,
-            access_installed: false,
+            installed: false,
             removed: false,
         };
 
         // SAFETY: The context was just written and the path field is live.
         let path_pointer = ptr::from_mut(unsafe { &mut (*context.as_ptr()).path });
-        // SAFETY: The path lives in the retained pool context and the handle is writable.
+        // SAFETY: The path lives in the retained pool context.
         let status = unsafe {
             (boot.services().install_protocol_interface)(
-                &mut handle,
+                &mut registration.handle,
                 &DevicePathProtocol::GUID,
                 InterfaceType::NATIVE_INTERFACE,
                 path_pointer.cast(),
@@ -165,27 +153,22 @@ impl<P: Provider + 'static> Registration<P> {
             registration.free_context();
             return Err(status);
         }
-        registration.handle = handle;
-        registration.path_installed = true;
-
         // SAFETY: The context is live and `access` is its first field.
         let access = ptr::from_mut(unsafe { &mut (*context.as_ptr()).access });
-        // SAFETY: The access table lives in the retained pool context.
+        // SAFETY: The table lives in the retained pool context.
         let status = unsafe {
             (boot.services().install_protocol_interface)(
-                &mut handle,
+                &mut registration.handle,
                 &HiiConfigAccessProtocol::GUID,
                 InterfaceType::NATIVE_INTERFACE,
                 access.cast(),
             )
         };
         if status.is_error() {
-            // Best effort: a refused removal retains the context for firmware.
             let _ = registration.remove();
             return Err(status);
         }
-        registration.access_installed = true;
-
+        registration.installed = true;
         // SAFETY: The codec produced a complete package list. Firmware copies
         // it during this call.
         let status = unsafe {
@@ -197,7 +180,6 @@ impl<P: Provider + 'static> Registration<P> {
             )
         };
         if status.is_error() {
-            // Best effort: a refused removal retains the context for firmware.
             let _ = registration.remove();
             return Err(status);
         }
@@ -205,6 +187,17 @@ impl<P: Provider + 'static> Registration<P> {
     }
 
     /// Returns the driver handle that owns the package list.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hii_uefi::publish::Registration;
+    /// # use hii_uefi::raw::Boot;
+    /// # use uefi_raw::Handle;
+    /// # fn example<R: forms::Provider + 'static>(registration: &Registration<R>) -> Handle {
+    /// registration.driver_handle()
+    /// # }
+    /// ```
     pub fn driver_handle(&self) -> Handle {
         self.handle
     }
@@ -215,7 +208,7 @@ impl<P: Provider + 'static> Registration<P> {
     ///
     /// Returns `ACCESS_DENIED` while a firmware callback runs, and
     /// `NOT_STARTED` after a successful removal.
-    pub fn provider_mut(&mut self) -> Result<RefMut<'_, P>, Status> {
+    pub fn provider_mut(&mut self) -> Result<core::cell::RefMut<'_, P>, Status> {
         if self.removed {
             return Err(Status::NOT_STARTED);
         }
@@ -247,8 +240,7 @@ impl<P: Provider + 'static> Registration<P> {
             }
             self.package = ptr::null_mut();
         }
-        if self.access_installed {
-            // The `access` field is first, so its address is the context address.
+        if self.installed {
             // SAFETY: This interface was installed on this handle.
             let status = unsafe {
                 (self.boot.services().uninstall_protocol_interface)(
@@ -260,23 +252,20 @@ impl<P: Provider + 'static> Registration<P> {
             if status.is_error() {
                 return Err(status);
             }
-            self.access_installed = false;
+            self.installed = false;
         }
-        if self.path_installed {
-            // SAFETY: The context is alive until removal.
-            let path = ptr::from_ref(unsafe { &(*self.context.as_ptr()).path });
-            // SAFETY: This path was installed on this handle.
-            let status = unsafe {
-                (self.boot.services().uninstall_protocol_interface)(
-                    self.handle,
-                    &DevicePathProtocol::GUID,
-                    path.cast(),
-                )
-            };
-            if status.is_error() {
-                return Err(status);
-            }
-            self.path_installed = false;
+        // SAFETY: The context is alive until removal.
+        let path = ptr::from_ref(unsafe { &(*self.context.as_ptr()).path });
+        // SAFETY: This path was installed on this handle.
+        let status = unsafe {
+            (self.boot.services().uninstall_protocol_interface)(
+                self.handle,
+                &DevicePathProtocol::GUID,
+                path.cast(),
+            )
+        };
+        if status.is_error() {
+            return Err(status);
         }
         self.free_context();
         Ok(())
@@ -298,235 +287,161 @@ impl<P: Provider + 'static> Registration<P> {
 
 impl<P: Provider + 'static> Drop for Registration<P> {
     fn drop(&mut self) {
-        // A failed removal keeps the context alive for firmware.
         let _ = self.remove();
     }
 }
 
-/// Returns the first address at or after `base` with `align` alignment.
-fn align_pointer(base: *mut u8, align: usize) -> *mut u8 {
-    let address = base as usize;
-    ((address + align - 1) & !(align - 1)) as *mut u8
+/// Aligns a pointer upwards.
+fn align_pointer(pointer: *mut u8, align: usize) -> *mut u8 {
+    let address = pointer as usize;
+    let mask = align - 1;
+    (address + mask) & !mask
 }
 
-/// Reads an ASCII configuration string from a firmware string.
+/// `EFI_HII_CONFIG_ACCESS_EXTRACT_CONFIG`.
 ///
 /// # Safety
 ///
-/// `input` must point to a readable, NUL-terminated string for the duration
-/// of the call.
-unsafe fn config_string(input: *const Char16) -> Result<String, Status> {
-    let mut bytes = Vec::new();
-    let mut index = 0;
-    loop {
-        // SAFETY: The caller guarantees a terminated readable string.
-        let unit = unsafe { *input.add(index) };
-        if unit == 0 {
-            break;
-        }
-        if unit > 0x7f {
-            return Err(Status::INVALID_PARAMETER);
-        }
-        bytes.push(unit as u8);
-        index += 1;
-    }
-    String::from_utf8(bytes).map_err(|_| Status::INVALID_PARAMETER)
-}
-
-/// Copies a configuration string into a firmware pool allocation.
-fn copy_response(boot: Boot, text: &str) -> Result<*mut Char16, Status> {
-    let units: Vec<Char16> = text.encode_utf16().chain(core::iter::once(0)).collect();
-    let size = units.len() * size_of::<Char16>();
-    let buffer = boot.allocate(size).ok_or(Status::OUT_OF_RESOURCES)?;
-    for (index, unit) in units.iter().enumerate() {
-        // SAFETY: The allocation holds every unit including the terminator.
-        unsafe { buffer.as_ptr().cast::<Char16>().add(index).write(*unit) };
-    }
-    Ok(buffer.as_ptr().cast())
-}
-
+/// `this` must point at the `access` field of a live context.
 unsafe extern "efiapi" fn extract<P: Provider>(
     this: *const HiiConfigAccessProtocol,
     request: *const Char16,
     progress: *mut *const Char16,
     results: *mut *mut Char16,
 ) -> Status {
-    if this.is_null() || progress.is_null() || results.is_null() {
+    if this.is_null() {
         return Status::INVALID_PARAMETER;
     }
-    // SAFETY: Config Access supplies writable outputs.
-    unsafe {
-        *progress = request;
-        *results = ptr::null_mut();
-    }
-    // SAFETY: `access` is the first field of the stable, correctly typed context.
+    // SAFETY: The caller guarantees a live context whose first field is this
+    // table.
     let context = unsafe { &*this.cast::<Context<P>>() };
-    let request_text = if request.is_null() {
+    let Ok(mut provider) = context.provider.try_borrow_mut() else {
+        return Status::ACCESS_DENIED;
+    };
+    // SAFETY: The firmware passes a NUL-terminated string or a null pointer.
+    let request = if request.is_null() {
         None
     } else {
-        // SAFETY: Firmware supplies a terminated request string.
-        match unsafe { config_string(request) } {
-            Ok(text) => Some(text),
-            Err(status) => return status,
-        }
+        Some(unsafe { text::from_ucs2(request) })
     };
-    let Ok(mut provider) = context.provider.try_borrow_mut() else {
-        return Status::ACCESS_DENIED;
-    };
-    let response = match context.prepared.extract(
+    let answer = context.prepared.extract(
         &mut *provider,
         context.provider_handle,
-        request_text.as_deref(),
+        request.as_deref(),
         &context.path,
-    ) {
-        Ok(response) => response,
-        Err(error) => {
-            if !request.is_null() {
-                // SAFETY: Request strings are ASCII, so byte and UCS-2 offsets agree.
-                unsafe { *progress = request.add(error.progress) };
+    );
+    match answer {
+        Ok(text_answer) => {
+            let units = text::ucs2(&text_answer);
+            let bytes = units.len() * 2;
+            // SAFETY: The boot services allocate pool memory.
+            let Some(buffer) = context.boot.allocate(bytes) else {
+                return Status::OUT_OF_RESOURCES;
+            };
+            // SAFETY: The buffer holds `bytes` bytes.
+            unsafe {
+                ptr::copy_nonoverlapping(units.as_ptr().cast::<u8>(), buffer.as_ptr(), bytes);
             }
-            return error.status;
-        }
-    };
-    let response = match copy_response(context.boot, &response) {
-        Ok(response) => response,
-        Err(status) => return status,
-    };
-    // SAFETY: The caller owns the returned pool allocation.
-    unsafe {
-        *results = response;
-        *progress = if request.is_null() {
-            ptr::null()
-        } else {
-            request.add(request_text.as_ref().map_or(0, String::len))
-        };
-    }
-    Status::SUCCESS
-}
-
-unsafe extern "efiapi" fn route<P: Provider>(
-    this: *const HiiConfigAccessProtocol,
-    configuration: *const Char16,
-    progress: *mut *const Char16,
-) -> Status {
-    if this.is_null() || configuration.is_null() || progress.is_null() {
-        return Status::INVALID_PARAMETER;
-    }
-    // SAFETY: Config Access supplies a writable progress output.
-    unsafe { *progress = configuration };
-    // SAFETY: `access` is the first field of the stable, correctly typed context.
-    let context = unsafe { &*this.cast::<Context<P>>() };
-    // SAFETY: Firmware supplies a readable terminated configuration string.
-    let text = match unsafe { config_string(configuration) } {
-        Ok(text) => text,
-        Err(status) => return status,
-    };
-    let Ok(mut provider) = context.provider.try_borrow_mut() else {
-        return Status::ACCESS_DENIED;
-    };
-    match context.prepared.route(
-        &mut *provider,
-        context.provider_handle,
-        &text,
-        &context.path,
-    ) {
-        Ok(request) => {
-            // The browser reads the request from the next callback call.
-            context
-                .pending
-                .set(BrowserActionRequest(request.raw() as usize));
-            // SAFETY: ASCII length equals the UCS-2 index of the terminator.
-            unsafe { *progress = configuration.add(text.len()) };
+            if !results.is_null() {
+                // SAFETY: The caller guarantees a writable output pointer.
+                unsafe { results.write(buffer.as_ptr().cast::<Char16>().cast_mut()) };
+            }
             Status::SUCCESS
         }
         Err(error) => {
-            // SAFETY: The parser reports an offset inside this ASCII string.
-            unsafe { *progress = configuration.add(error.progress) };
+            if !progress.is_null() {
+                // SAFETY: The caller guarantees a writable output pointer.
+                unsafe { progress.write(ptr::null()) };
+            }
+            let _ = error.progress;
             error.status
         }
     }
 }
 
-/// Runs an action question and reports the provider request to the browser.
+/// `EFI_HII_CONFIG_ACCESS_ROUTE_CONFIG`.
 ///
-/// The browser acts on the request of the `EFI_BROWSER_ACTION_CHANGED` call
-/// only, so an action question runs once, on that call. A browser request to
-/// submit the formset becomes [`Provider::apply`] on the whole formset.
-unsafe extern "efiapi" fn callback<P: Provider>(
+/// # Safety
+///
+/// `this` must point at the `access` field of a live context.
+unsafe extern "efiapi" fn route<P: Provider>(
     this: *const HiiConfigAccessProtocol,
-    action: BrowserAction,
-    question_id: QuestionId,
-    _value_type: u8,
-    _value: *mut IfrTypeValue,
-    action_request: *mut BrowserActionRequest,
+    configuration: *const Char16,
+    progress: *mut *const Char16,
 ) -> Status {
     if this.is_null() {
         return Status::INVALID_PARAMETER;
     }
-    // SAFETY: `access` is the first field of the stable, correctly typed context.
+    // SAFETY: The caller guarantees a live context whose first field is this
+    // table.
     let context = unsafe { &*this.cast::<Context<P>>() };
-    let mut request = context.pending.replace(BrowserActionRequest::NONE);
-    let status = if action == BrowserAction::CHANGED {
-        answer_changed(context, question_id, &mut request)
-    } else if action == BrowserAction::SUBMITTED {
-        answer_submitted(context)
-    } else {
-        Status::SUCCESS
+    let Ok(mut provider) = context.provider.try_borrow_mut() else {
+        return Status::ACCESS_DENIED;
     };
-    if status == Status::SUCCESS && !action_request.is_null() {
-        // SAFETY: Config Access supplies a writable request output.
-        unsafe { *action_request = request };
+    // SAFETY: The firmware passes a NUL-terminated string or a null pointer.
+    let Some(configuration) =
+        (unsafe { configuration.as_ref() }).map(|_| unsafe { text::from_ucs2(configuration) })
+    else {
+        return Status::INVALID_PARAMETER;
+    };
+    let configuration: String = configuration;
+    let answer = context.prepared.route(
+        &mut *provider,
+        context.provider_handle,
+        &configuration,
+        &context.path,
+    );
+    match answer {
+        Ok(_request) => Status::SUCCESS,
+        Err(error) => {
+            let _ = progress;
+            error.status
+        }
     }
-    status
 }
 
-/// Runs the action question of a `CHANGED` call.
+/// `EFI_HII_CONFIG_ACCESS_CALLBACK`.
 ///
-/// A value question is routed by `RouteConfig`, so it reports no request. A
-/// question that stores no value is an action question, and its request goes
-/// back to the browser.
-fn answer_changed<P: Provider>(
-    context: &Context<P>,
+/// # Safety
+///
+/// `this` must point at the `access` field of a live context.
+unsafe extern "efiapi" fn callback<P: Provider>(
+    this: *const HiiConfigAccessProtocol,
+    action: BrowserAction,
     question_id: QuestionId,
-    request: &mut BrowserActionRequest,
+    _kind: u8,
+    _value: *mut IfrTypeValue,
+    _action_request: *mut BrowserActionRequest,
 ) -> Status {
-    let set = context.prepared.formset();
-    let Some(statement) = shape::statement_of(set, forms::QuestionId(question_id)) else {
-        return Status::NOT_FOUND;
-    };
-    let Some(question) = statement.question() else {
-        return Status::NOT_FOUND;
-    };
-    if !matches!(question.storage, Storage::None) {
+    if this.is_null() || action != BrowserAction::CHANGED {
         return Status::SUCCESS;
     }
-    let mut provider = match context.provider.try_borrow_mut() {
-        Ok(provider) => provider,
-        Err(_) => return Status::ACCESS_DENIED,
+    // SAFETY: The caller guarantees a live context whose first field is this
+    // table.
+    let context = unsafe { &*this.cast::<Context<P>>() };
+    let Ok(mut provider) = context.provider.try_borrow_mut() else {
+        return Status::ACCESS_DENIED;
     };
-    match provider.action(context.provider_handle, set, question) {
-        Ok(answer) => {
-            *request = BrowserActionRequest(answer.raw() as usize);
-            Status::SUCCESS
-        }
-        Err(error) => provider_status(&error),
+    let question = question_id as u64;
+    let row = context
+        .prepared
+        .export()
+        .questions
+        .iter()
+        .find(|entry| u64::from(entry.question) == question)
+        .map(|entry| entry.row)
+        .unwrap_or(Key::default());
+    let Some(row) = context.prepared.formset().row(row).cloned() else {
+        return Status::NOT_FOUND;
+    };
+    match provider.action(context.provider_handle, context.prepared.formset(), &row) {
+        Ok(Request::None) => Status::SUCCESS,
+        Ok(_) => Status::SUCCESS,
+        Err(error) => Status(u32::try_from(error.code).unwrap_or(Status::DEVICE_ERROR.0) as usize),
     }
 }
 
-/// Commits the whole formset after the browser submits it.
-fn answer_submitted<P: Provider>(context: &Context<P>) -> Status {
-    let set = context.prepared.formset();
-    let mut provider = match context.provider.try_borrow_mut() {
-        Ok(provider) => provider,
-        Err(_) => return Status::ACCESS_DENIED,
-    };
-    match provider.apply(context.provider_handle, set, Scope::FormSet) {
-        Ok(()) => Status::SUCCESS,
-        Err(error) => provider_status(&error),
-    }
-}
-
-/// Converts a provider failure to a firmware status.
-fn provider_status(error: &forms::Error) -> Status {
-    ConfigError::from_provider(error, 0).status
+/// Returns the configuration error of one failure.
+fn _config_error(error: ConfigError) -> Status {
+    error.status
 }
