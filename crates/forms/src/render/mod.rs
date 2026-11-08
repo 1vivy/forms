@@ -42,4 +42,4 @@ mod theme;
 pub use modal::ModalWidget;
 pub use page::{FormsWidget, Paint, Painters};
 pub use placement::{Margins, Placement, placement};
-pub use theme::{Alignment, KeyNames, Theme};
+pub use theme::{Alignment, Theme};

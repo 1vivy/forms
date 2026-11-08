@@ -56,6 +56,7 @@ impl Handler for ChoiceOptions {
             kind: EditorKind::Choice {
                 items,
                 selected: state.selected,
+                current: Self::index(field),
             },
         })
     }

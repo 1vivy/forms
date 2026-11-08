@@ -17,9 +17,11 @@ use crate::{ButtonRole, Modal, ModalStyle, Progress, render::Theme};
 
 /// Draws a [`Modal`] as a centered box with its buttons.
 ///
-/// The box holds the title, the body, an optional progress bar and one line of
-/// buttons. The selected button is highlighted. The body wraps at word
-/// boundaries. A small area keeps the title and drops the other parts.
+/// The box holds the title, the body, an optional progress bar and the
+/// buttons. Buttons that fit share one line. Otherwise each button takes its
+/// own line and fills the width when it is selected, so a modal with many
+/// buttons is a picker. The body wraps at word boundaries. A small area keeps
+/// the title and drops the other parts.
 ///
 /// # Examples
 ///
@@ -99,10 +101,17 @@ impl Widget for ModalWidget<'_> {
         let body = self.modal.body.clone();
         let inner_width = width.saturating_sub(2).max(1);
         let body_lines = u16::try_from(wrapped_lines(&body, inner_width)).unwrap_or(1);
-        let has_buttons = !self.modal.buttons.is_empty();
+        let labels = labels(self.modal);
+        let stacked = !fits(&labels, inner_width);
+        let button_lines = match (labels.is_empty(), stacked) {
+            (true, _) => 0,
+            (false, false) => 1,
+            (false, true) => u16::try_from(labels.len()).unwrap_or(u16::MAX),
+        };
         let has_progress = self.modal.progress.is_some();
-        let height =
-            (2 + body_lines + u16::from(has_progress) + u16::from(has_buttons)).min(area.height);
+        let height = (2u16 + body_lines + u16::from(has_progress))
+            .saturating_add(button_lines)
+            .min(area.height);
         if height < 3 {
             return;
         }
@@ -145,41 +154,75 @@ impl Widget for ModalWidget<'_> {
             );
             cursor += 1;
         }
-        if has_buttons && cursor < inner.bottom() {
-            let labels: Vec<String> = self
-                .modal
-                .buttons
-                .iter()
-                .map(|button| {
-                    let safe = button.role == ButtonRole::Cancel;
-                    if safe {
-                        format!("[{}]", button.label)
-                    } else {
-                        format!(" {} ", button.label)
-                    }
-                })
-                .collect();
-            let text = labels.join("  ");
-            let area = Rect::new(inner.x, cursor, inner.width, 1);
-            let mut x = inner.x;
-            for (index, label) in labels.iter().enumerate() {
-                let width = u16::try_from(label.chars().count()).unwrap_or(0);
-                if width == 0 || x + width > area.right() {
-                    break;
-                }
-                let style = if index == self.modal.selected {
-                    theme.selection
-                } else {
-                    Style::new().fg(theme.foreground)
-                };
-                for (cell, character) in (x..area.right()).zip(label.chars()) {
-                    buf[(cell, area.y)].set_char(character).set_style(style);
-                }
-                x = x.saturating_add(width).saturating_add(2);
+        if labels.is_empty() || cursor >= inner.bottom() {
+            return;
+        }
+        let style_of = |index: usize| {
+            if index == self.modal.selected {
+                theme.selection
+            } else {
+                Style::new().fg(theme.foreground)
             }
-            let _ = text;
+        };
+        if stacked {
+            // The lines left after the body scroll so the selected button
+            // stays in view.
+            let visible = usize::from(inner.bottom() - cursor);
+            let first = self
+                .modal
+                .selected
+                .saturating_sub(visible.saturating_sub(1));
+            for (offset, (index, label)) in labels
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(visible)
+                .enumerate()
+            {
+                let line = Rect::new(inner.x, cursor + offset as u16, inner.width, 1);
+                let style = style_of(index);
+                buf.set_style(line, style);
+                for (cell, character) in (line.x..line.right()).zip(label.chars()) {
+                    buf[(cell, line.y)].set_char(character).set_style(style);
+                }
+            }
+            return;
+        }
+        let mut x = inner.x;
+        for (index, label) in labels.iter().enumerate() {
+            let width = u16::try_from(label.chars().count()).unwrap_or(0);
+            let style = style_of(index);
+            for (cell, character) in (x..inner.right()).zip(label.chars()) {
+                buf[(cell, cursor)].set_char(character).set_style(style);
+            }
+            x = x.saturating_add(width).saturating_add(2);
         }
     }
+}
+
+/// Returns the button labels of a modal. The safe button is bracketed.
+fn labels(modal: &Modal) -> Vec<String> {
+    modal
+        .buttons
+        .iter()
+        .map(|button| {
+            if button.role == ButtonRole::Cancel {
+                format!("[{}]", button.label)
+            } else {
+                format!(" {} ", button.label)
+            }
+        })
+        .collect()
+}
+
+/// Returns whether the labels fit one line of `width` cells, two cells apart.
+fn fits(labels: &[String], width: u16) -> bool {
+    let cells: usize = labels
+        .iter()
+        .map(|label| label.chars().count())
+        .sum::<usize>()
+        + 2 * labels.len().saturating_sub(1);
+    cells <= usize::from(width)
 }
 
 /// Returns the number of lines that text needs within a width.
@@ -233,5 +276,46 @@ fn draw_progress(progress: Progress, area: Rect, buf: &mut Buffer, theme: &Theme
         buf[(cell, area.y)]
             .set_char(character)
             .set_style(Style::new().fg(theme.link));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModalWidget;
+    use crate::{Button, ButtonRole, Modal, ModalStyle};
+    use alloc::{format, string::String, vec::Vec};
+    use ratatui_core::{buffer::Buffer, layout::Rect, widgets::Widget};
+
+    /// Buttons that do not fit one line take one line each, so every
+    /// destination of a picker stays visible.
+    #[test]
+    fn buttons_that_do_not_fit_one_line_stack() {
+        let mut modal = Modal::new(ModalStyle::Info, "Save log", "Choose where.");
+        for index in 0..6 {
+            modal.push(Button::new(
+                format!("volume {index}"),
+                ButtonRole::Other(index),
+            ));
+        }
+        modal.push(Button::new("Cancel", ButtonRole::Cancel));
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buffer = Buffer::empty(area);
+        ModalWidget::new(&modal).render(area, &mut buffer);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| String::from(buffer[(x, y)].symbol()))
+                    .collect()
+            })
+            .collect();
+        for index in 0..6 {
+            let label = format!("volume {index}");
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(&label)).count(),
+                1,
+                "{label}"
+            );
+        }
+        assert!(lines.iter().any(|line| line.contains("[Cancel]")));
     }
 }

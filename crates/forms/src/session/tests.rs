@@ -1,6 +1,6 @@
 //! Session decisions: navigation, editing, validation and live rows.
 
-use super::{BACK, Editor, EditorKind, Event, Input, Session};
+use super::{BACK, Editor, EditorKind, Event, Input, Keypad, Session};
 use crate::controls::Decoration;
 use crate::model::{
     Builder, Choice, Control, Expr, FormSet, Key, MemoryProvider, Request, Store, Validation, Value,
@@ -196,10 +196,10 @@ fn ordered_list_reorders_with_three_keys() {
     assert_eq!(provider.store.read(Key(12)), Ok(Value::List(vec![2, 1])));
 }
 
-/// With the option on, Enter on an unchanged value leaves the editor
-/// without a write; with it off, the same Enter writes the value.
+/// Without a Back key, Enter on an unchanged value leaves the editor without
+/// a write; with a Back key, the same Enter writes the value.
 #[test]
-fn enter_on_an_unchanged_value_cancels_only_when_chosen() {
+fn enter_on_an_unchanged_value_cancels_without_a_back_key() {
     let mut builder = Builder::new(Key(1), "S");
     builder.page("Main");
     builder
@@ -209,22 +209,59 @@ fn enter_on_an_unchanged_value_cancels_only_when_chosen() {
         )
         .set_binding(Key(14));
     let set = builder.build();
-    for (cancels, expected) in [
-        (true, Event::Changed),
-        (false, Event::Response(Request::None)),
+    for (keypad, expected) in [
+        (Keypad::volume_and_power(), Event::Changed),
+        (Keypad::keyboard(), Event::Response(Request::None)),
     ] {
         let mut provider = provider_of(&set);
         provider.set(Key(14), Value::Number(1));
-        let mut session = session_of(&set).with_enter_cancels_unchanged(cancels);
+        let mut session = session_of(&set).with_keypad(keypad);
         assert!(session.enter(Key(1)));
         session.input(Input::Enter, &mut provider);
         assert_eq!(
             session.input(Input::Enter, &mut provider),
             expected,
-            "cancels={cancels}"
+            "{keypad:?}"
         );
         assert!(session.view(&mut provider).editor.is_none());
     }
+}
+
+/// A device that cannot type keeps a text row visible but grayed out, states
+/// why in its help, and opens no editor for it.
+#[test]
+fn a_text_row_needs_a_keyboard() {
+    let mut builder = Builder::new(Key(1), "S");
+    builder.page("Main");
+    builder
+        .row(
+            "Name",
+            Control::TextInput {
+                minimum: 0,
+                maximum: 8,
+                secret: false,
+            },
+        )
+        .set_binding(Key(16))
+        .set_help("Set it from the host.");
+    let set = builder.build();
+    let mut provider = provider_of(&set);
+    provider.set(Key(16), Value::Text(String::from("a")));
+    let mut session = session_of(&set).with_keypad(Keypad::volume_and_power());
+    assert!(session.enter(Key(1)));
+    let view = session.view(&mut provider);
+    assert!(!view.rows[0].enabled);
+    assert_eq!(view.help, "Needs a keyboard. Set it from the host.");
+    assert!(matches!(
+        session.input(Input::Enter, &mut provider),
+        Event::Failed(_)
+    ));
+    assert!(session.view(&mut provider).editor.is_none());
+
+    let mut session = session_of(&set);
+    assert!(session.enter(Key(1)));
+    assert_eq!(session.input(Input::Enter, &mut provider), Event::Changed);
+    assert!(session.view(&mut provider).editor.is_some());
 }
 
 /// Up on the first option moves the cursor to the last, and Down on the

@@ -183,11 +183,11 @@ pub const TURN: Duration = Duration::from_millis(10);
 /// # Examples
 ///
 /// ```
-/// use forms::render::{KeyNames, Margins};
+/// use forms::render::Margins;
 ///
 /// let mut frame = forms_uefi::Frame::default();
 /// frame.margins = Margins { top: 50, bottom: 50, left: 35, right: 35 };
-/// frame.theme.keys = KeyNames::volume_and_power();
+/// frame.theme.keys = forms::Keypad::volume_and_power();
 /// frame.key_map = forms_uefi::map_key_phone;
 /// assert_eq!(frame.columns, 40);
 /// ```

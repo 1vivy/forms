@@ -17,7 +17,7 @@ or a firmware opcode. HII is an adapter, not a foundation.
 | `forms::controls` | handlers | `Handler`, `Registry`, `Decoration`, `EditState`: one dispatch path for built-in and consumer controls. `standard/` holds the HII controls, `extras/` the forms-only ones (slider, progress, divider) | `no_std` + `alloc` |
 | `forms::session` | session | `Input` in, `Event` and `View` out. `navigate` (selection, links, Back), `edit` (editors, commands, validation, resets), `view` (what a renderer draws) | `no_std` + `alloc` |
 | `forms::modal` | modal | `Modal`, buttons with roles, safe default, progress | `no_std` + `alloc` |
-| `forms::render` | view | `FormsWidget`, `ModalWidget`, `Theme`, `KeyNames`, `Painters`, and page placement (`Margins`, `placement`) | `no_std` + `alloc` |
+| `forms::render` | view | `FormsWidget`, `ModalWidget`, `Theme`, `Painters`, and page placement (`Margins`, `placement`) | `no_std` + `alloc` |
 | `forms-uefi` | front end | UEFI display and input | UEFI targets |
 | `hii-abi` | HII layouts | Raw HII package and IFR layout constants | `no_std`, any target |
 | `hii-ifr` | HII codec | IFR and HII package codec, and the HII export descriptor | `no_std` + `alloc`, any target |
@@ -105,15 +105,24 @@ An ordered list editor picks a chosen entry up with Enter, moves it with Up and
 Down, and drops it with Enter; Down past the last chosen entry removes it.
 Enter on an available entry adds it, and Enter on the closing `Done` entry
 commits. Left and Right move an entry one place as keyboard shortcuts. A
-choice editor moves its cursor with Up and Down and writes the option under
-the cursor on Enter. A slider or number editor changes the value with Up and
-Down and commits with Enter; a keyboard's Back leaves the old value.
-`Session::with_enter_cancels_unchanged(true)` lets Enter on an unchanged value
-close any value editor without a write, which gives a device without a Back
-key a way out; it is off by default. `Theme::keys` names the keys in the hint
-line; `KeyNames::volume_and_power()` names a phone's keys and points at the
-Back row. `Theme::link_mark` marks the rows that open another page, at the
-right edge.
+choice editor moves its cursor with Up and Down, fills the line under the
+cursor, marks the stored value with `Theme::current_mark`, and writes the
+option under the cursor on Enter. A slider or number editor changes the value
+with Up and Down and commits with Enter; a keyboard's Back leaves the old value.
+
+One `Keypad` states the keys of a device. `Session::with_keypad` applies its
+rule and `Theme::keys` names its keys in the hint line, so the consumer passes
+the same value to both. `Keypad::volume_and_power()` has no Back key: Enter on
+the stored value closes any value editor without a write, and the hint line
+points at the Back row. It cannot type: a text row stays visible, grayed out,
+and its help starts with `Needs a keyboard.` before the row's own help, so a
+consumer can name another way to set the value. `Keypad::keyboard()` is the
+default.
+
+The page draws the help of the selected row in a box under the rows, wrapped
+at word boundaries. A modal whose buttons do not fit one line draws one button
+per line, so a modal with many buttons is a picker. `Theme::link_mark` marks
+the rows that open another page, at the right edge.
 
 ## Extension
 

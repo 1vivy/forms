@@ -92,6 +92,8 @@ pub enum EditorKind {
         items: Vec<String>,
         /// The highlighted index.
         selected: usize,
+        /// The index of the stored value.
+        current: usize,
     },
     /// A decimal number with a cursor.
     Number {
@@ -217,7 +219,7 @@ pub struct Session<H> {
     back_row: bool,
     entry_back_row: bool,
     readable_rows: bool,
-    enter_cancels_unchanged: bool,
+    keypad: Keypad,
     modal: Option<Modal>,
     registry: Registry,
     /// The last read time of each value key.
@@ -230,10 +232,13 @@ pub struct Session<H> {
 }
 
 mod edit;
+mod keypad;
 mod navigate;
 #[cfg(test)]
 mod tests;
 mod view;
+
+pub use keypad::Keypad;
 
 impl<H: Copy + Eq> Session<H> {
     /// Creates a session over published sets, sorted by title.
@@ -255,7 +260,7 @@ impl<H: Copy + Eq> Session<H> {
             back_row: true,
             entry_back_row: true,
             readable_rows: false,
-            enter_cancels_unchanged: false,
+            keypad: Keypad::keyboard(),
             modal: None,
             registry: Registry::builtin(),
             reads: BTreeMap::new(),
@@ -306,22 +311,24 @@ impl<H: Copy + Eq> Session<H> {
         self
     }
 
-    /// Chooses whether Enter on an unchanged value closes an editor without a
-    /// write. The default is `false`.
+    /// States the keys of the device. The default is [`Keypad::keyboard`].
     ///
-    /// A device without a Back key has no other way to leave an editor
-    /// unchanged. The option covers value editors (choice, number, slider,
-    /// text, ordered list); an editor whose value the person moved still
-    /// commits on Enter.
+    /// Without a Back key, Enter on an unchanged value closes an editor
+    /// without a write, because the device has no other way to leave it. The
+    /// rule covers value editors (choice, number, slider, text, ordered list);
+    /// an editor whose value the person moved still commits on Enter. Without
+    /// typing, a row whose editor needs typed text is grayed out and opens no
+    /// editor.
     ///
     /// # Examples
     ///
     /// ```
-    /// let _session = forms::Session::<u32>::new(Vec::new()).with_enter_cancels_unchanged(true);
+    /// let _session = forms::Session::<u32>::new(Vec::new())
+    ///     .with_keypad(forms::Keypad::volume_and_power());
     /// ```
     #[must_use]
-    pub fn with_enter_cancels_unchanged(mut self, enter_cancels_unchanged: bool) -> Self {
-        self.enter_cancels_unchanged = enter_cancels_unchanged;
+    pub fn with_keypad(mut self, keypad: Keypad) -> Self {
+        self.keypad = keypad;
         self
     }
 

@@ -32,7 +32,7 @@ impl<H: Copy + Eq> Session<H> {
             // An unchanged value leaves the editor without a write, so a device
             // with no Back key can still back out of an editor.
             EditStep::Accept(value)
-                if self.enter_cancels_unchanged && open.value.as_ref() == Some(&value) =>
+                if self.keypad.back.is_none() && open.value.as_ref() == Some(&value) =>
             {
                 self.message = None;
                 Event::Changed

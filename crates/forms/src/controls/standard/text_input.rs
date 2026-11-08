@@ -41,6 +41,10 @@ impl Handler for TextInput {
         true
     }
 
+    fn needs_typing(&self) -> bool {
+        true
+    }
+
     fn start(&self, field: &Field<'_>) -> EditState {
         let text = text(field.value).to_string();
         EditState {

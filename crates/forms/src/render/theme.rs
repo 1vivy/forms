@@ -1,6 +1,6 @@
 //! Colours, styles and presentation defaults of a page.
 
-use crate::{Decoration, Truncation};
+use crate::{Decoration, Keypad, Truncation};
 use ratatui_core::style::{Color, Modifier, Style};
 
 /// Where a value sits in its column.
@@ -91,60 +91,10 @@ pub struct Theme {
     pub bar_empty: char,
     /// The mark at the right edge of a row that opens another page.
     pub link_mark: &'static str,
-    /// The key names of the hint line.
-    pub keys: KeyNames,
-}
-
-/// The key names that the hint line shows.
-///
-/// A device without a keyboard names its own keys and states that it has no
-/// Back key, so the hint line points at the Back row instead.
-///
-/// # Examples
-///
-/// ```
-/// use forms::render::KeyNames;
-///
-/// let phone = KeyNames::volume_and_power();
-/// assert_eq!(phone.back, None);
-/// assert_eq!(KeyNames::default().back, Some("Esc"));
-/// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyNames {
-    /// The keys that move the selection.
-    pub move_keys: &'static str,
-    /// The key that selects or accepts.
-    pub select: &'static str,
-    /// The key that cancels or goes back, if the device has one.
-    pub back: Option<&'static str>,
-}
-
-impl Default for KeyNames {
-    fn default() -> Self {
-        Self {
-            move_keys: "Up Down",
-            select: "Enter",
-            back: Some("Esc"),
-        }
-    }
-}
-
-impl KeyNames {
-    /// Returns the names of a device with only volume keys and a power key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// assert_eq!(forms::render::KeyNames::volume_and_power().select, "Power");
-    /// ```
-    #[must_use]
-    pub const fn volume_and_power() -> Self {
-        Self {
-            move_keys: "Vol",
-            select: "Power",
-            back: None,
-        }
-    }
+    /// The mark before the stored value in a choice list.
+    pub current_mark: &'static str,
+    /// The keys that the hint line names.
+    pub keys: Keypad,
 }
 
 impl Default for Theme {
@@ -188,7 +138,8 @@ impl Default for Theme {
             bar_full: '█',
             bar_empty: '░',
             link_mark: " >",
-            keys: KeyNames::default(),
+            current_mark: "* ",
+            keys: Keypad::keyboard(),
         }
     }
 }

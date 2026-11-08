@@ -9,7 +9,7 @@ mod row;
 mod tests;
 
 use editor::hints;
-use row::{put, row_height};
+use row::{put, row_height, wrap};
 
 use alloc::{collections::BTreeMap, format, string::String, string::ToString, vec, vec::Vec};
 use ratatui_core::{
@@ -21,9 +21,12 @@ use ratatui_core::{
 use ratatui_widgets::{block::Block, clear::Clear};
 
 use crate::{
-    Decoration, Editor, EditorKind, Key, RowView, Truncation, View,
-    render::{KeyNames, ModalWidget, Theme},
+    Decoration, Editor, EditorKind, Key, Keypad, RowView, Truncation, View,
+    render::{ModalWidget, Theme},
 };
+
+/// The most lines that the help box of a page holds.
+const HELP_LINES: u16 = 4;
 
 /// Draws the value area of a consumer decoration.
 ///
@@ -237,7 +240,7 @@ impl Widget for FormsWidget<'_> {
             put(
                 buf,
                 line,
-                &hints(self.view, theme.keys),
+                &hints(self.view, theme.keys, theme.current_mark),
                 Style::new().fg(theme.hint),
             );
             footer = Some(line);
@@ -250,8 +253,12 @@ impl Widget for FormsWidget<'_> {
             put(buf, line, message, Style::new().fg(theme.message));
             list.height = list.height.saturating_sub(1);
         }
-        let help_height = if list.height >= 6 {
-            (list.height / 3).min(3)
+        // The help box keeps a fixed height, so the rows do not move when the
+        // selection changes. A rule separates it from the rows, and its text
+        // wraps at word boundaries; text beyond the last line ends with the
+        // clip mark.
+        let help_height = if list.height >= 8 {
+            (list.height / 4).clamp(2, HELP_LINES + 1)
         } else {
             0
         };
@@ -262,8 +269,18 @@ impl Widget for FormsWidget<'_> {
             list.height.saturating_sub(help_height),
         );
         if help_height > 0 {
-            let help = Rect::new(list.x, rows_area.bottom(), list.width, help_height);
-            put(buf, help, &self.view.help, Style::new().fg(theme.help));
+            let rule: String =
+                core::iter::repeat_n(theme.divider, usize::from(list.width)).collect();
+            put(
+                buf,
+                Rect::new(list.x, rows_area.bottom(), list.width, 1),
+                &rule,
+                Style::new().fg(theme.border),
+            );
+            self.help(
+                Rect::new(list.x, rows_area.bottom() + 1, list.width, help_height - 1),
+                buf,
+            );
         }
         self.rows(rows_area, buf);
         let overlay = Rect::new(
@@ -282,8 +299,31 @@ impl Widget for FormsWidget<'_> {
         }
     }
 }
-
 impl FormsWidget<'_> {
+    /// Draws the help of the selected row, wrapped to the area.
+    fn help(&self, area: Rect, buf: &mut Buffer) {
+        let theme = &self.theme;
+        let style = Style::new().fg(theme.help);
+        let lines = wrap(&self.view.help, area.width);
+        let shown = usize::from(area.height);
+        for (index, line) in lines.iter().take(shown).enumerate() {
+            let text = if index + 1 == shown && lines.len() > shown {
+                let keep = usize::from(area.width).saturating_sub(theme.clip.chars().count());
+                let mut cut: String = line.chars().take(keep).collect();
+                cut.push_str(theme.clip);
+                cut
+            } else {
+                line.clone()
+            };
+            put(
+                buf,
+                Rect::new(area.x, area.y + index as u16, area.width, 1),
+                &text,
+                style,
+            );
+        }
+    }
+
     /// Draws the visible rows, scrolled to keep the selection visible.
     fn rows(&self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {

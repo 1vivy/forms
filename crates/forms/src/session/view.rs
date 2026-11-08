@@ -79,6 +79,7 @@ impl<H: Copy + Eq> Session<H> {
                     });
                 let (text, decoration) =
                     live.unwrap_or_else(|| self.registry.format(row, value.as_ref()));
+                let untypable = self.untypable(row);
                 let selectable = row.control.is_interactive()
                     && !disabled
                     && (self.readable_rows || !matches!(row.control, Control::Text(_)));
@@ -86,15 +87,20 @@ impl<H: Copy + Eq> Session<H> {
                     selected_key = row.key;
                     any_selected = true;
                 }
+                let help = if untypable {
+                    untypable_help(&row.help)
+                } else {
+                    row.help.clone()
+                };
                 rows.push(RowView {
                     key: row.key,
                     label: row.label.clone(),
                     value: text,
-                    help: row.help.clone(),
+                    help,
                     decoration,
                     selectable,
                     link: matches!(row.control, Control::Link(_)),
-                    enabled: !disabled && !locked,
+                    enabled: !disabled && !locked && !untypable,
                     uncertain,
                     presentation: row.presentation,
                 });
@@ -152,6 +158,15 @@ impl<H: Copy + Eq> Session<H> {
             Some(expr) => self.evaluate(provider, handle, set, expr),
             None => Ok(false),
         }
+    }
+
+    /// Returns whether a row needs typed text on a device that cannot type.
+    pub(super) fn untypable(&self, row: &Row) -> bool {
+        !self.keypad.typing
+            && self
+                .registry
+                .handler(&row.control)
+                .is_some_and(|handler| handler.needs_typing())
     }
 
     /// Returns whether a row is read-only.
@@ -228,5 +243,20 @@ impl<H: Copy + Eq> Session<H> {
             message: self.message.clone(),
             modal: self.modal.clone(),
         }
+    }
+}
+
+/// The reason a row that needs typing is grayed out.
+pub(super) const NEEDS_KEYBOARD: &str = "Needs a keyboard.";
+
+/// The help of a row that needs typing on a device that cannot type.
+///
+/// The row's own help follows the reason, so a consumer can state another
+/// way to set the value.
+fn untypable_help(help: &str) -> String {
+    if help.is_empty() {
+        String::from(NEEDS_KEYBOARD)
+    } else {
+        alloc::format!("{NEEDS_KEYBOARD} {help}")
     }
 }

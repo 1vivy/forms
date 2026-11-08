@@ -249,9 +249,10 @@ mod editor {
     use ratatui_core::layout::Rect;
     use ratatui_core::widgets::Widget;
 
-    /// The screen text of a page with a choice editor of 40 options, the
-    /// cursor on `selected`, drawn into a panel shorter than the list.
-    fn screen(selected: usize) -> String {
+    /// The screen lines of a page with a choice editor of 40 options, the
+    /// cursor on `selected` and the stored value on `current`, drawn into a
+    /// panel shorter than the list.
+    fn screen(selected: usize, current: usize) -> (Vec<String>, Buffer) {
         let items: Vec<String> = (0..40).map(|index| format!("item{index:02}")).collect();
         let view = View {
             path: Vec::new(),
@@ -262,7 +263,11 @@ mod editor {
             editor: Some(Editor {
                 row: Key(1),
                 label: String::from("Target"),
-                kind: EditorKind::Choice { items, selected },
+                kind: EditorKind::Choice {
+                    items,
+                    selected,
+                    current,
+                },
             }),
             message: None,
             modal: None,
@@ -270,18 +275,96 @@ mod editor {
         let area = Rect::new(0, 0, 40, 16);
         let mut buffer = Buffer::empty(area);
         FormsWidget::new(&view).render(area, &mut buffer);
-        (0..area.height)
-            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
-            .map(|position| String::from(buffer[position].symbol()))
-            .collect()
+        let lines = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| String::from(buffer[(x, y)].symbol()))
+                    .collect()
+            })
+            .collect();
+        (lines, buffer)
     }
 
     /// A cursor past the bottom of the panel scrolls the list so it is drawn.
     #[test]
     fn a_long_list_scrolls_to_the_cursor() {
-        assert!(screen(0).contains("item00"));
-        let last = screen(39);
-        assert!(last.contains("item39"), "the wrapped cursor is in view");
-        assert!(!last.contains("item00"), "the list scrolled");
+        let (first, _) = screen(0, 0);
+        assert!(first.iter().any(|line| line.contains("item00")));
+        let (last, _) = screen(39, 0);
+        assert!(
+            last.iter().any(|line| line.contains("item39")),
+            "the wrapped cursor is in view"
+        );
+        assert!(
+            !last.iter().any(|line| line.contains("item00")),
+            "the list scrolled"
+        );
+    }
+
+    /// The stored value carries the current mark, and the cursor line is
+    /// filled with the selection style, also where it holds no text.
+    #[test]
+    fn the_picker_marks_the_stored_value_and_fills_the_cursor() {
+        let theme = crate::render::Theme::default();
+        let (lines, buffer) = screen(2, 1);
+        assert!(lines.iter().any(|line| line.contains("* item01")));
+        assert!(lines.iter().any(|line| line.contains("  item02")));
+        let y = lines
+            .iter()
+            .position(|line| line.contains("item02"))
+            .expect("the cursor line");
+        let line = &lines[y];
+        let x = line
+            .char_indices()
+            .position(|(index, _)| line[index..].starts_with("item02"))
+            .expect("the label")
+            + 12;
+        assert_eq!(buffer[(x as u16, y as u16)].bg, theme.selection.bg.unwrap());
+    }
+}
+
+mod help {
+    use super::super::FormsWidget;
+    use crate::View;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::widgets::Widget;
+
+    /// Help longer than one line wraps at word boundaries in the help box.
+    #[test]
+    fn long_help_wraps() {
+        let view = View {
+            path: Vec::new(),
+            title: String::from("Setup"),
+            rows: Vec::new(),
+            selected: None,
+            help: String::from("Start something once, or change what starts by default"),
+            editor: None,
+            message: None,
+            modal: None,
+        };
+        let area = Rect::new(0, 0, 30, 24);
+        let mut buffer = Buffer::empty(area);
+        FormsWidget::new(&view).render(area, &mut buffer);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| String::from(buffer[(x, y)].symbol()))
+                    .collect()
+            })
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Start something once, or"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("change what starts by"))
+        );
+        assert!(lines.iter().any(|line| line.contains("default")));
     }
 }

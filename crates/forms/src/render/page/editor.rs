@@ -7,7 +7,7 @@ impl FormsWidget<'_> {
     /// Draws the open editor as a centered panel.
     pub(super) fn editor_panel(&self, editor: &Editor, area: Rect, buf: &mut Buffer) {
         let theme = &self.theme;
-        let lines = editor_lines(editor);
+        let lines = editor_lines(editor, theme.current_mark);
         let width = area.width.saturating_sub(2).clamp(12, 56).min(area.width);
         let height = (lines.len() as u16 + 2).min(area.height);
         if width < 4 || height < 3 {
@@ -29,41 +29,50 @@ impl FormsWidget<'_> {
         block.render(panel, buf);
         // A list longer than the panel scrolls so the highlighted line stays in
         // view; a cursor that wrapped to the last entry is drawn at the bottom.
+        // The highlighted line is filled across the panel, as a selected row
+        // is on the page.
         let visible = usize::from(inner.height);
         let cursor = lines.iter().position(|line| line.1).unwrap_or(0);
         let first = cursor.saturating_sub(visible.saturating_sub(1));
         for (index, line) in lines.iter().skip(first).take(visible).enumerate() {
             let style = if line.1 {
-                Style::new()
-                    .fg(theme.foreground)
-                    .add_modifier(Modifier::BOLD)
+                theme.selection
             } else {
                 Style::new().fg(theme.foreground)
             };
+            let row = Rect::new(inner.x, inner.y + index as u16, inner.width, 1);
+            buf.set_style(row, style);
             let text = fit(&line.0, inner.width, theme.clip, Truncation::End);
-            put(
-                buf,
-                Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
-                &text,
-                style,
-            );
+            put(buf, row, &text, style);
         }
     }
 }
 
 /// Returns the lines of an editor and whether each line is highlighted.
-pub(super) fn editor_lines(editor: &Editor) -> Vec<(String, bool)> {
+///
+/// A choice list marks the stored value with `current`, and pads every other
+/// entry by the same width, so the labels stay in one column.
+pub(super) fn editor_lines(editor: &Editor, current: &str) -> Vec<(String, bool)> {
     match &editor.kind {
-        EditorKind::Choice { items, selected } => items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                (
-                    format!("{} {}", if index == *selected { '>' } else { ' ' }, item),
-                    index == *selected,
-                )
-            })
-            .collect(),
+        EditorKind::Choice {
+            items,
+            selected,
+            current: stored,
+        } => {
+            let pad = " ".repeat(current.chars().count());
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let mark = if index == *stored {
+                        current
+                    } else {
+                        pad.as_str()
+                    };
+                    (format!("{mark}{item}"), index == *selected)
+                })
+                .collect()
+        }
         EditorKind::Number { text, cursor } => {
             vec![(with_cursor(text, *cursor), true)]
         }
@@ -135,17 +144,22 @@ pub(super) fn with_cursor(text: &str, cursor: usize) -> String {
     out
 }
 
-/// Returns the key hints of the current page in the theme's key names.
+/// Returns the key hints of the current page in the keypad's key names.
 ///
 /// Without a Back key the page hint points at the Back row, and an editor
+/// names how to leave it unchanged: Enter on the stored value. An editor
 /// names only what its own keys do.
-pub(super) fn hints(view: &View, keys: KeyNames) -> String {
-    let KeyNames {
+pub(super) fn hints(view: &View, keys: Keypad, current: &str) -> String {
+    let Keypad {
         move_keys,
         select,
         back,
+        ..
     } = keys;
-    let cancel = back.map_or_else(String::new, |back| format!("   {back} cancel"));
+    let cancel = match back {
+        Some(back) => format!("   {back} cancel"),
+        None => String::new(),
+    };
     if view.modal.is_some() {
         return format!("{move_keys} move   {select} choose{cancel}");
     }
@@ -157,10 +171,17 @@ pub(super) fn hints(view: &View, keys: KeyNames) -> String {
             EditorKind::List { .. } => {
                 format!("{move_keys} move   {select} pick up, add or done{cancel}")
             }
+            EditorKind::Choice { .. } if back.is_none() => {
+                format!(
+                    "{move_keys} move   {select} choose   {} current",
+                    current.trim_end()
+                )
+            }
+            EditorKind::Choice { .. } => format!("{move_keys} move   {select} choose{cancel}"),
             EditorKind::Slider { .. } | EditorKind::Number { .. } => {
                 format!("{move_keys} adjust   {select} accept{cancel}")
             }
-            _ => format!("Type to edit   {select} accept{cancel}"),
+            EditorKind::Text { .. } => format!("Type to edit   {select} accept{cancel}"),
         },
         None => match back {
             Some(back) => format!("{move_keys} move   {select} open   {back} back"),

@@ -169,6 +169,13 @@ pub trait Handler {
         false
     }
 
+    /// Returns whether the editor of this control needs typed text.
+    ///
+    /// A session on a device without a keyboard opens no such editor.
+    fn needs_typing(&self) -> bool {
+        false
+    }
+
     /// Returns the initial editor state of a row.
     fn start(&self, field: &Field<'_>) -> EditState {
         let _ = field;

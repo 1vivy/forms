@@ -166,6 +166,11 @@ impl<H: Copy + Eq> Session<H> {
                 return Event::Failed(error);
             }
         }
+        if self.untypable(&row) {
+            let error = Error::new(super::view::NEEDS_KEYBOARD);
+            self.message = Some(error.reason.clone());
+            return Event::Failed(error);
+        }
         let opens = self
             .registry
             .handler(&row.control)
