@@ -167,6 +167,17 @@ pub struct View {
     pub modal: Option<Modal>,
 }
 
+/// Where a person is in a session: each open page and its selected row.
+///
+/// [`Session::location`] returns it and [`Session::resume`] opens it again.
+/// It holds keys only, so it outlives the session and the sets it came from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Location {
+    /// The set, the page and the selected row of each open page, from the
+    /// entry page down.
+    pages: Vec<(Key, Key, Key)>,
+}
+
 /// One page of the navigation stack.
 #[derive(Clone, Copy, Debug)]
 struct StackPage<H> {
@@ -395,6 +406,97 @@ impl<H: Copy + Eq> Session<H> {
         self.base = 1;
         self.editor = None;
         self.message = None;
+        true
+    }
+
+    /// Returns where the person is: the open pages and the selected row of
+    /// each.
+    ///
+    /// A front end that ends a session to run an action keeps the location and
+    /// passes it to [`Session::resume`] of the next session, so the person
+    /// returns to the page and the row that started the action. A UEFI setup
+    /// browser keeps its form open across an action callback in the same way.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let session = forms::Session::<u32>::new(Vec::new());
+    /// assert_eq!(session.location(), forms::Location::default());
+    /// ```
+    #[must_use]
+    pub fn location(&self) -> Location {
+        Location {
+            pages: self
+                .pages
+                .iter()
+                .map(|page| (page.set, page.page, page.selected))
+                .collect(),
+        }
+    }
+
+    /// Opens the pages of a location again, over the sets of this session.
+    ///
+    /// The first page of the location must be the pinned entry page of this
+    /// session. Each later page opens while its set still states it, and the
+    /// first page that no longer exists ends the walk, so the person lands on
+    /// the deepest page that still exists. A selected row that is gone falls
+    /// back to the first selectable row on the next view. Returns `true` when
+    /// every page of the location opened.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{Builder, Control, Key, Session};
+    ///
+    /// let mut builder = Builder::new(Key(1), "S");
+    /// builder.page_with(Key(10), "Main");
+    /// builder.link("More", Key(11));
+    /// builder.page_with(Key(11), "More");
+    /// builder.row("Mode", Control::Toggle);
+    /// let set = builder.build();
+    ///
+    /// let mut first = Session::new(vec![(0u8, set.clone())]);
+    /// first.enter(Key(1));
+    /// let mut provider = forms::MemoryProvider::new(vec![(0u8, set.clone())]);
+    /// first.input(forms::Input::Enter, &mut provider);
+    /// let location = first.location();
+    ///
+    /// let mut next = Session::new(vec![(0u8, set)]);
+    /// next.enter(Key(1));
+    /// assert!(next.resume(&location));
+    /// assert_eq!(next.view(&mut provider).title, "More");
+    /// ```
+    pub fn resume(&mut self, location: &Location) -> bool {
+        let Some(entry) = self.pages.first().copied() else {
+            return false;
+        };
+        let mut levels = location.pages.iter();
+        match levels.next() {
+            Some((set, page, selected)) if *set == entry.set && *page == entry.page => {
+                self.pages.truncate(1);
+                if let Some(first) = self.pages.first_mut() {
+                    first.selected = *selected;
+                }
+            }
+            _ => return false,
+        }
+        for (set, page, selected) in levels {
+            let handle = self
+                .sets
+                .iter()
+                .find(|(_, candidate)| candidate.key == *set && candidate.page(*page).is_some())
+                .map(|(handle, _)| *handle);
+            let Some(handle) = handle else {
+                return false;
+            };
+            self.pages.push(StackPage {
+                handle,
+                set: *set,
+                page: *page,
+                selected: *selected,
+            });
+        }
+        self.editor = None;
         true
     }
 

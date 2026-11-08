@@ -61,4 +61,4 @@ pub use model::{
     MemoryProvider, MemoryStore, Operand, Page, Presentation, Provider, Refresh, Request, Row,
     Scope, Store, Target, Truncation, Validation, ValidationKind, Value,
 };
-pub use session::{Editor, EditorKind, Event, Input, Keypad, RowView, Session, View};
+pub use session::{Editor, EditorKind, Event, Input, Keypad, Location, RowView, Session, View};

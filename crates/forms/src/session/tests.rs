@@ -589,3 +589,50 @@ fn a_slider_row_tracks_its_editor() {
         "the row follows the editor before the value is written"
     );
 }
+
+/// A resumed session lands on the page and the row that the last one left,
+/// and on the deepest page that still exists when a rebuild removed a page.
+#[test]
+fn a_location_resumes_the_page_and_the_row() {
+    let build = |with_detail: bool| {
+        let mut builder = Builder::new(Key(1), "S");
+        builder.page_with(Key(10), "Main");
+        builder.link("Storage", Key(11));
+        builder.page_with(Key(11), "Storage");
+        builder.row("First", Control::Toggle).set_binding(Key(20));
+        builder.row("Second", Control::Toggle).set_binding(Key(21));
+        if with_detail {
+            builder.link("Detail", Key(12));
+            builder.page_with(Key(12), "Detail");
+            builder.row("Size", Control::Toggle).set_binding(Key(22));
+        }
+        builder.build()
+    };
+    let set = build(true);
+    let mut provider = provider_of(&set);
+    let mut session = session_of(&set);
+    assert!(session.enter(Key(1)));
+    session.input(Input::Enter, &mut provider);
+    session.input(Input::Down, &mut provider);
+    let on_second = session.location();
+    session.input(Input::Down, &mut provider);
+    session.input(Input::Enter, &mut provider);
+    let on_detail = session.location();
+
+    let mut next = session_of(&set);
+    assert!(next.enter(Key(1)));
+    assert!(next.resume(&on_second));
+    let view = next.view(&mut provider);
+    assert_eq!(view.title, "Storage");
+    assert_eq!(
+        view.selected.map(|index| view.rows[index].label.as_str()),
+        Some("Second")
+    );
+
+    let rebuilt = build(false);
+    let mut provider = provider_of(&rebuilt);
+    let mut next = session_of(&rebuilt);
+    assert!(next.enter(Key(1)));
+    assert!(!next.resume(&on_detail), "the detail page is gone");
+    assert_eq!(next.view(&mut provider).title, "Storage");
+}
