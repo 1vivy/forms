@@ -2,6 +2,114 @@
 
 use super::*;
 
+impl View {
+    /// Returns the page as plain text lines: what a person sees, without a
+    /// display.
+    ///
+    /// The first line is the path and the title. Each row follows as
+    /// `label: value`, with `>` before the selected row and `(off)` after a
+    /// row that accepts no change. An open editor, an open modal, the help and
+    /// the message follow the rows. A host reads these lines to review or
+    /// drive a page that only a panel shows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use forms::{Builder, Control, Key, MemoryProvider, Session};
+    ///
+    /// let mut builder = Builder::new(Key(1), "Platform");
+    /// builder.page("Main");
+    /// builder.row("Secure boot", Control::Toggle).set_binding(Key(10));
+    /// let mut provider = MemoryProvider::new(vec![(0u8, builder.build())]);
+    /// provider.set(Key(10), forms::Value::Bool(true));
+    /// let mut session = Session::new(provider.sets.clone()).with_back_row(false);
+    /// session.enter(Key(1));
+    /// let lines = session.view(&mut provider).lines();
+    /// assert_eq!(lines[0], "Main");
+    /// assert_eq!(lines[1], "> Secure boot: On");
+    /// ```
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut head = self.path.join(" > ");
+        if !head.is_empty() {
+            head.push_str(" > ");
+        }
+        head.push_str(&self.title);
+        lines.push(head);
+        for (index, row) in self.rows.iter().enumerate() {
+            let cursor = if self.selected == Some(index) {
+                "> "
+            } else {
+                "  "
+            };
+            let mut line = alloc::format!("{cursor}{}", row.label);
+            if !row.value.is_empty() {
+                line.push_str(": ");
+                line.push_str(&row.value);
+            }
+            if !row.enabled {
+                line.push_str(" (off)");
+            }
+            lines.push(line);
+        }
+        if let Some(editor) = &self.editor {
+            lines.push(alloc::format!("editor {}:", editor.label));
+            match &editor.kind {
+                EditorKind::Choice {
+                    items,
+                    selected,
+                    current,
+                } => {
+                    for (index, item) in items.iter().enumerate() {
+                        let cursor = if index == *selected { '>' } else { ' ' };
+                        let mark = if index == *current { '*' } else { ' ' };
+                        lines.push(alloc::format!("  {cursor}{mark} {item}"));
+                    }
+                }
+                EditorKind::Number { text, .. }
+                | EditorKind::Text {
+                    text,
+                    secret: false,
+                    ..
+                } => {
+                    lines.push(alloc::format!("  {text}"));
+                }
+                EditorKind::Text { text, .. } => {
+                    lines.push(alloc::format!("  {}", "*".repeat(text.chars().count())));
+                }
+                EditorKind::Slider { text, .. } => lines.push(alloc::format!("  {text}")),
+                EditorKind::List {
+                    items,
+                    selected,
+                    chosen,
+                    ..
+                } => {
+                    for (index, item) in items.iter().enumerate() {
+                        let cursor = if index == *selected { '>' } else { ' ' };
+                        let mark = if index < *chosen { '*' } else { ' ' };
+                        lines.push(alloc::format!("  {cursor}{mark} {item}"));
+                    }
+                }
+            }
+        }
+        if let Some(modal) = &self.modal {
+            lines.push(alloc::format!("modal {}: {}", modal.title, modal.body));
+            for (index, button) in modal.buttons.iter().enumerate() {
+                let cursor = if index == modal.selected { '>' } else { ' ' };
+                lines.push(alloc::format!("  {cursor} [{}]", button.label));
+            }
+        }
+        if !self.help.is_empty() {
+            lines.push(alloc::format!("help: {}", self.help));
+        }
+        if let Some(message) = &self.message {
+            lines.push(alloc::format!("message: {message}"));
+        }
+        lines
+    }
+}
+
 impl<H: Copy + Eq> Session<H> {
     /// Reads a fresh snapshot of the current page.
     ///

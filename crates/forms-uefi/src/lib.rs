@@ -205,6 +205,15 @@ pub struct Frame {
     pub key_map: KeyMap,
     /// How the pixels reach the graphics output.
     pub drawing: Drawing,
+    /// Keep the last frame on the graphics output when a session ends, and
+    /// draw the next session over it without a black frame between them.
+    ///
+    /// A consumer that ends a session to run an action and then opens the next
+    /// one keeps the page on the panel the whole time, so the person sees no
+    /// flash and a status that the last frame stated stays visible while the
+    /// action runs. Such a consumer calls [`clear`] before its first session
+    /// and before it hands the display to another owner.
+    pub keep: bool,
 }
 
 impl Default for Frame {
@@ -216,8 +225,24 @@ impl Default for Frame {
             theme: Theme::default(),
             key_map: map_key,
             drawing: Drawing::Auto,
+            keep: false,
         }
     }
+}
+
+/// Blacks the whole graphics output, margins included.
+///
+/// A [`Frame::keep`] consumer calls it before its first session, so no older
+/// console text stays in the margins, and before it hands the display to a
+/// child image or a reset.
+///
+/// # Errors
+///
+/// Returns the firmware failure when no graphics output can be opened or the
+/// copy fails.
+pub fn clear(frame: &Frame) -> uefi::Result {
+    let mut display = GopDisplay::open(frame)?;
+    display.black_out()
 }
 
 /// How the pixels of the page reach the graphics output.
@@ -362,7 +387,12 @@ where
 {
     let (stdin, stdout) = console::handles()?;
     let mut keys = Keys::open(stdin, frame.key_map)?;
-    match GopDisplay::open(frame) {
+    match GopDisplay::open(frame).and_then(|mut display| {
+        if !frame.keep {
+            display.black_out()?;
+        }
+        Ok(display)
+    }) {
         Ok(display) => graphics(display, frame, &mut keys, session, provider, shell),
         Err(_) => text(stdout, frame, &mut keys, session, provider, shell),
     }
@@ -427,7 +457,7 @@ where
             Err(error) => Err(error),
         }
     };
-    let closed = display.close();
+    let closed = display.close(frame.keep);
     served.and(closed)
 }
 

@@ -343,6 +343,51 @@ impl<H: Copy + Eq> Session<H> {
         self
     }
 
+    /// Changes the keys of the device while the session runs.
+    ///
+    /// A front end that also takes key strokes from a host with a keyboard
+    /// widens the keypad for that host's strokes and restores it afterwards.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut session = forms::Session::<u32>::new(Vec::new());
+    /// session.set_keypad(forms::Keypad::volume_and_power());
+    /// assert_eq!(session.keypad(), forms::Keypad::volume_and_power());
+    /// ```
+    pub fn set_keypad(&mut self, keypad: Keypad) {
+        self.keypad = keypad;
+    }
+
+    /// Returns the keys of the device.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(forms::Session::<u32>::new(Vec::new()).keypad(), forms::Keypad::keyboard());
+    /// ```
+    #[must_use]
+    pub fn keypad(&self) -> Keypad {
+        self.keypad
+    }
+
+    /// Shows a result line on the page until the next input changes it.
+    ///
+    /// A front end that ran an action reports its result here, so every result
+    /// reaches the person on the same line as a refused value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut session = forms::Session::<u8>::new(Vec::new());
+    /// session.notify("No setting changed");
+    /// let mut provider = forms::MemoryProvider::new(Vec::new());
+    /// assert_eq!(session.view(&mut provider).message.as_deref(), Some("No setting changed"));
+    /// ```
+    pub fn notify(&mut self, text: impl Into<String>) {
+        self.message = Some(text.into());
+    }
+
     /// Uses a registry with consumer handlers.
     ///
     /// # Examples

@@ -30,7 +30,8 @@ a `Shell`, then calls `run` or `run_with`.
 | --- | --- |
 | `run(session, provider, shell)` | Serve one session in `Frame::default()`. |
 | `run_with(session, provider, shell, &frame)` | Serve one session in the consumer's `Frame`. |
-| `Frame` | The page grid (`columns`, `rows`), the `margins`, the `theme`, the `key_map` and the `drawing` (`Auto` or `Blt`). A consumer changes single fields of `Frame::default()`. |
+| `Frame` | The page grid (`columns`, `rows`), the `margins`, the `theme`, the `key_map`, the `drawing` (`Auto` or `Blt`) and `keep`. A consumer changes single fields of `Frame::default()`. With `keep`, a session leaves its last frame on the panel and the next session draws over it, so a consumer that ends a session to run an action shows no black frame. |
+| `clear(&frame)` | Black the whole graphics output. A `keep` consumer calls it before its first session and before it hands the display to another owner. |
 | `ask(modal, &frame, idle)` | Show one modal over an empty page and return the chosen `ButtonRole`; Cancel is highlighted first, and an `idle` that ends the wait returns `EFI_ABORTED`. |
 | `Idle` | What `ask` runs on each turn: `turn` answers a `Turn`, and `damaged` reports a screen overwrite so the modal is drawn again. A closure `FnMut() -> Turn` is an `Idle` without damage. |
 | `Display`, `Surface` | What `Shell::opened` receives: graphics (mode and scale) or text, the page cells and the input protocol. Its `Display` text is a one-line description. |

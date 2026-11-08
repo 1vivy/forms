@@ -113,7 +113,7 @@ impl Order {
 }
 
 impl GopDisplay {
-    /// Opens the live mode of the graphics output and blacks it.
+    /// Opens the live mode of the graphics output. The caller blacks it.
     ///
     /// # Errors
     ///
@@ -155,7 +155,7 @@ impl GopDisplay {
             }
         };
         let page = page(mode, frame);
-        let mut display = Self {
+        Ok(Self {
             output,
             mode,
             page,
@@ -163,9 +163,7 @@ impl GopDisplay {
             buffer: vec![Rgb888::BLACK; page.size.width as usize * page.size.height as usize],
             dirty: None,
             failure: None,
-        };
-        display.black_out()?;
-        Ok(display)
+        })
     }
 
     /// Returns the live mode and the scale of the page.
@@ -188,18 +186,23 @@ impl GopDisplay {
         }
     }
 
-    /// Blacks the whole mode and reports the failure of a draw.
+    /// Reports the failure of a draw and, unless `keep` holds, blacks the
+    /// whole mode.
     ///
     /// # Errors
     ///
     /// Returns the recorded failure of a copy, and the firmware failure of the
     /// clear itself.
-    pub(crate) fn close(&mut self) -> uefi::Result {
+    pub(crate) fn close(&mut self, keep: bool) -> uefi::Result {
         let recorded = match self.failure.take() {
             Some(status) => Err(Error::from(status)),
             None => Ok(()),
         };
-        recorded.and(self.black_out())
+        if keep {
+            recorded
+        } else {
+            recorded.and(self.black_out())
+        }
     }
 
     fn copy_dirty(&mut self) -> uefi::Result {
@@ -301,7 +304,7 @@ impl GopDisplay {
     }
 
     /// Blacks the whole mode, margins included.
-    fn black_out(&mut self) -> uefi::Result {
+    pub(crate) fn black_out(&mut self) -> uefi::Result {
         match &self.present {
             Present::Memory(framebuffer) => {
                 let length =

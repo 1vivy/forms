@@ -124,6 +124,14 @@ at word boundaries. A modal whose buttons do not fit one line draws one button
 per line, so a modal with many buttons is a picker. `Theme::link_mark` marks
 the rows that open another page, at the right edge.
 
+`Session::notify` shows a result line on the page, the same line as a refused
+value, so a front end reports every action result in one place.
+`Session::location` and `Session::resume` carry the open pages and the
+selected rows from one session to the next. `Session::set_keypad` changes the
+keys while a session runs, for a host that sends key strokes with a keyboard.
+`View::lines` returns the page as plain text lines, so a host can review or
+drive a page that only a panel shows.
+
 ## Extension
 
 Every control kind, including the built-in kinds, is a `Handler` in a
