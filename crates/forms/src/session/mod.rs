@@ -2,6 +2,7 @@
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
+    rc::Rc,
     string::String,
     vec,
     vec::Vec,
@@ -220,7 +221,9 @@ const BACK: &str = "< Back";
 /// assert_eq!(view.rows[0].label, "Secure boot");
 /// ```
 pub struct Session<H> {
-    sets: Vec<(H, FormSet)>,
+    /// The published sets. A set is shared, so a turn that reads the current
+    /// page takes a reference count, not a copy of every page.
+    sets: Vec<(H, Rc<FormSet>)>,
     pages: Vec<StackPage<H>>,
     root: Option<usize>,
     editor: Option<OpenEditor>,
@@ -259,7 +262,11 @@ impl<H: Copy + Eq> Session<H> {
     /// ```
     /// let _session = forms::Session::<u32>::new(Vec::new());
     /// ```
-    pub fn new(mut sets: Vec<(H, FormSet)>) -> Self {
+    pub fn new(sets: Vec<(H, FormSet)>) -> Self {
+        let mut sets: Vec<(H, Rc<FormSet>)> = sets
+            .into_iter()
+            .map(|(handle, set)| (handle, Rc::new(set)))
+            .collect();
         sets.sort_by(|left, right| left.1.title.cmp(&right.1.title));
         Self {
             sets,
@@ -555,7 +562,11 @@ impl<H: Copy + Eq> Session<H> {
     /// let mut session = forms::Session::<u32>::new(Vec::new());
     /// session.replace(Vec::new());
     /// ```
-    pub fn replace(&mut self, mut sets: Vec<(H, FormSet)>) {
+    pub fn replace(&mut self, sets: Vec<(H, FormSet)>) {
+        let mut sets: Vec<(H, Rc<FormSet>)> = sets
+            .into_iter()
+            .map(|(handle, set)| (handle, Rc::new(set)))
+            .collect();
         let root = self
             .root
             .and_then(|index| self.sets.get(index))
@@ -671,13 +682,13 @@ impl<H: Copy + Eq> Session<H> {
     }
 
     /// Returns the handle, set and page of the active page.
-    fn current(&self) -> Option<(H, FormSet, Key)> {
+    fn current(&self) -> Option<(H, Rc<FormSet>, Key)> {
         let page = self.pages.last()?;
         let (_, set) = self
             .sets
             .iter()
             .find(|(handle, set)| *handle == page.handle && set.key == page.set)?;
-        Some((page.handle, set.clone(), page.page))
+        Some((page.handle, Rc::clone(set), page.page))
     }
 }
 

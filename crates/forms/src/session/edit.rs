@@ -57,7 +57,7 @@ impl<H: Copy + Eq> Session<H> {
         &mut self,
         provider: &mut P,
         handle: H,
-        set: FormSet,
+        set: Rc<FormSet>,
         row: Row,
         step: EditStep,
     ) -> Event {
@@ -81,7 +81,7 @@ impl<H: Copy + Eq> Session<H> {
         &mut self,
         provider: &mut P,
         handle: H,
-        set: FormSet,
+        set: Rc<FormSet>,
         row: Row,
     ) -> Event {
         self.editor = None;
@@ -127,7 +127,7 @@ impl<H: Copy + Eq> Session<H> {
         &mut self,
         provider: &mut P,
         handle: H,
-        set: FormSet,
+        set: Rc<FormSet>,
         row: Row,
         value: Value,
     ) -> Event {
