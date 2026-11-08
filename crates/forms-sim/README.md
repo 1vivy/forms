@@ -70,14 +70,21 @@ edge. `Screen::set_theme` replaces the theme that the panel draws with.
 ## The demo site
 
 The `demo` feature adds `forms_sim::demo`, which runs the `forms-examples`
-formset and exports a small C ABI for a web page:
+gallery and exports a small C ABI for a web page:
 
 | Function | Result |
 | --- | --- |
-| `open()` | Opens the page and draws the first view |
+| `open()` | Opens the gallery and draws the first view |
 | `press(code, character)` | Applies one key stroke and draws the result |
 | `pixels()`, `width()`, `height()` | The RGB pixels and the panel size |
 | `text()`, `text_len()` | The last event text as UTF-8 |
+
+The gallery holds one row of every built-in control kind. It has a second
+page behind a link row, a grayed-out row with its reason in the help, a row
+whose help wraps over several lines, and a choice row with more options than
+the picker shows at once. The destination row opens a modal with one button
+for each destination, so the stacked-button picker is visible; the notice
+text names the button that the person chose.
 
 Build the site:
 
@@ -89,8 +96,43 @@ cp out/cargo/wasm32-unknown-unknown/release/forms_sim.wasm out/site/
 python3 -m http.server -d out/site 8000
 ```
 
-Open `http://localhost:8000/`. The arrow keys move, Enter selects and Escape
-goes back.
+Open `http://localhost:8000/`. The page draws the panel in a phone body. The
+three side buttons of the phone are Volume Up, Volume Down and Power, and they
+send the same key codes as the keyboard. The arrow keys move, Enter selects
+and Escape goes back.
+
+## The phone keys
+
+The demo states the keys of a phone once, for the session and for the page:
+
+```rust
+let keypad = forms::Keypad::volume_and_power();
+let session = forms::Session::<u8>::new(sets).with_keypad(keypad);
+let mut theme = forms::render::Theme::default();
+theme.keys = keypad;
+screen.set_theme(theme);
+```
+
+Without a Back key, Enter on the stored value closes an editor. The hint line
+names Volume and Power. A text row stays visible and grayed out, because the
+device cannot type; the help of the row states why.
+
+The wasm `press` takes the codes of `forms_sim::demo::input`:
+
+| Code | Key |
+| --- | --- |
+| `0` | Volume Up |
+| `1` | Volume Down |
+| `2` | Home |
+| `3` | Power |
+| `4` | Back |
+| `5` | Erase |
+| `6` | The character in the second argument |
+
+The page maps its side buttons and its keyboard to the same codes, so a click
+and a key press follow one path. The keyboard uses ArrowUp for Volume Up,
+ArrowDown for Volume Down, Enter for Power, ArrowLeft or Escape for Back and
+Backspace for Erase.
 
 ## Provenance
 

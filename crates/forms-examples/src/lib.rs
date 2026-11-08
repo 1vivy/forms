@@ -33,7 +33,10 @@ use alloc::{
     vec::Vec,
 };
 
-use forms::{Builder, Choice, Control, Error, FormSet, Key, Provider, Request, Row, Scope, Value};
+use forms::{
+    Builder, Choice, Control, Error, Expr, FormSet, Key, MemoryProvider, Provider, Request, Row,
+    Scope, Value,
+};
 
 /// The handle that [`SettingsProvider`] uses for its form set.
 pub const HANDLE: u8 = 1;
@@ -268,6 +271,270 @@ pub fn formset() -> FormSet {
         ],
     );
     builder.build()
+}
+
+/// The value key of the gallery toggle row.
+pub const GALLERY_TOGGLE: Key = Key(100);
+/// The value key of the gallery choice row.
+pub const GALLERY_CHOICE: Key = Key(101);
+/// The value key of the gallery number row.
+pub const GALLERY_NUMBER: Key = Key(102);
+/// The value key of the gallery slider row.
+pub const GALLERY_SLIDER: Key = Key(103);
+/// The value key of the gallery text row.
+pub const GALLERY_TEXT: Key = Key(104);
+/// The value key of the gallery password row.
+pub const GALLERY_PASSWORD: Key = Key(105);
+/// The value key of the gallery ordered-list row.
+pub const GALLERY_ORDER: Key = Key(106);
+/// The value key of the toggle on the second gallery page.
+pub const GALLERY_SECOND: Key = Key(107);
+/// The value key of the grayed-out gallery row.
+pub const GALLERY_DISABLED: Key = Key(108);
+/// The value key of the gallery row with long help.
+pub const GALLERY_GUARD: Key = Key(109);
+/// The value key of the gallery row with a scrolling picker.
+pub const GALLERY_BOOT: Key = Key(110);
+/// The default set that the gallery reset row writes.
+pub const GALLERY_DEFAULTS: Key = Key(140);
+
+/// The labels of the gallery choice row.
+pub const GALLERY_CHOICES: [&str; 18] = [
+    "Fast boot",
+    "Safe boot",
+    "Recovery",
+    "Network boot",
+    "USB boot",
+    "Disk boot",
+    "Shell",
+    "Diagnostics",
+    "Firmware update",
+    "Factory reset",
+    "Sleep",
+    "Shutdown",
+    "IPv4 boot",
+    "IPv6 boot",
+    "Legacy boot",
+    "Memory test",
+    "Rescue shell",
+    "Power off",
+];
+
+/// The labels of the gallery ordered-list row.
+pub const GALLERY_ORDER_CHOICES: [&str; 4] = ["Disk", "USB", "Network", "Shell"];
+
+/// Builds the gallery form set: one row for every built-in control kind.
+///
+/// The set has two pages. The first page holds the gallery, and its link row
+/// opens the second page. The action row is the destination picker that a
+/// front end may open as a modal.
+///
+/// # Examples
+///
+/// ```
+/// let set = forms_examples::gallery();
+/// assert_eq!(set.title, "Gallery");
+/// assert_eq!(set.pages.len(), 2);
+/// ```
+pub fn gallery() -> FormSet {
+    let mut builder = Builder::new(Key(2), "Gallery").help("Every control kind, in one set.");
+    let second = builder.key();
+    builder.page("Controls");
+    builder.row("Controls", Control::Heading);
+    builder.row(
+        "About this page",
+        Control::Text(String::from("Every built-in control kind, in one set.")),
+    );
+    builder
+        .link("Second page", second)
+        .set_help("Open a second page of the same set.");
+    builder
+        .row("Destination picker", Control::Action)
+        .set_help("Open a modal with one button for each destination.");
+    builder
+        .row("Secure boot", Control::Toggle)
+        .set_binding(GALLERY_TOGGLE)
+        .set_help("Verify the boot loader signature.");
+    builder
+        .row(
+            "Startup",
+            Control::Choice(gallery_choices(&GALLERY_CHOICES)),
+        )
+        .set_binding(GALLERY_CHOICE)
+        .set_help("The mode that the payload starts in.");
+    builder
+        .row("Boot entries", Control::Choice(boot_entries()))
+        .set_binding(GALLERY_BOOT)
+        .set_help("A list longer than the picker, so the picker scrolls.");
+    builder
+        .row(
+            "Cores",
+            Control::Number {
+                minimum: 1,
+                maximum: 64,
+                step: 1,
+            },
+        )
+        .set_binding(GALLERY_NUMBER)
+        .set_help("The number of cores that the payload starts.");
+    builder
+        .row(
+            "Menu timeout",
+            Control::Slider {
+                minimum: 0,
+                maximum: 10,
+                step: 1,
+                unit: String::from("s"),
+                labels: vec![Choice::new("Off", 0)],
+            },
+        )
+        .set_binding(GALLERY_SLIDER)
+        .set_help("How long the boot menu waits. Zero waits forever.");
+    builder
+        .row(
+            "Machine name",
+            Control::TextInput {
+                minimum: 0,
+                maximum: 24,
+                secret: false,
+            },
+        )
+        .set_binding(GALLERY_TEXT)
+        .set_help("The name that the payload receives.");
+    builder
+        .row(
+            "Password",
+            Control::TextInput {
+                minimum: 0,
+                maximum: 24,
+                secret: true,
+            },
+        )
+        .set_binding(GALLERY_PASSWORD)
+        .set_help("The secret that the boot loader passes.");
+    builder
+        .row(
+            "Disk order",
+            Control::OrderedList {
+                choices: gallery_choices(&GALLERY_ORDER_CHOICES),
+                maximum: 3,
+            },
+        )
+        .set_binding(GALLERY_ORDER)
+        .set_help("Choose the order in which the payload tries the disks.");
+    builder
+        .row("Restore gallery values", Control::Reset(GALLERY_DEFAULTS))
+        .set_help("Write the named default set.");
+    builder.row(
+        "Progress",
+        Control::Progress {
+            current: 1,
+            total: Some(4),
+        },
+    );
+    builder.row("Divider", Control::Divider);
+    let update = builder.row("Firmware update", Control::Toggle);
+    update.set_binding(GALLERY_DISABLED);
+    update.disabled = Some(Expr::Bool(true));
+    update.set_help("This board has no firmware update slot. The row is grayed out.");
+    builder
+        .row(
+            "Boot guard",
+            Control::Slider {
+                minimum: 0,
+                maximum: 5,
+                step: 1,
+                unit: String::from("x"),
+                labels: Vec::new(),
+            },
+        )
+        .set_binding(GALLERY_GUARD)
+        .set_help(
+            "This help is long so that the help box wraps it over several lines. A phone page \
+             still has to explain a value well, and this row shows how the box fills its lines \
+             and marks the text that it does not show.",
+        );
+    builder
+        .row(
+            "Imported control",
+            Control::Unsupported(String::from("Firmware opcode 0x1234")),
+        )
+        .set_help("An imported row that this crate cannot show. It stays visible.");
+    builder.page_with(second, "Second page");
+    builder.row("Second page", Control::Heading);
+    builder.row(
+        "Reached the link",
+        Control::Text(String::from("The link row opened this page.")),
+    );
+    builder
+        .row("Network boot", Control::Toggle)
+        .set_binding(GALLERY_SECOND)
+        .set_help("A value on the second page.");
+    builder.defaults(
+        GALLERY_DEFAULTS,
+        "Gallery defaults",
+        [
+            (GALLERY_TOGGLE, Value::Bool(false)),
+            (GALLERY_CHOICE, Value::Number(0)),
+            (GALLERY_NUMBER, Value::Number(3)),
+            (GALLERY_SLIDER, Value::Number(5)),
+            (GALLERY_ORDER, Value::List(vec![1])),
+            (GALLERY_SECOND, Value::Bool(false)),
+            (GALLERY_GUARD, Value::Number(1)),
+            (GALLERY_DISABLED, Value::Bool(false)),
+            (GALLERY_BOOT, Value::Number(0)),
+        ],
+    );
+    builder.build()
+}
+
+/// Returns the choices of the row whose picker scrolls.
+fn boot_entries() -> Vec<Choice> {
+    (0..60u64)
+        .map(|index| Choice::new(format!("Boot entry {index:02}"), index))
+        .collect()
+}
+
+/// Returns a provider over the gallery values, seeded so that every row shows
+/// a stored value.
+///
+/// The handle is [`HANDLE`], the same handle that [`SettingsProvider`] uses
+/// for its own set. A front end publishes one set at a time.
+///
+/// # Examples
+///
+/// ```
+/// use forms::{Store, Value};
+///
+/// let mut provider = forms_examples::gallery_provider();
+/// assert_eq!(
+///     provider.store.read(forms_examples::GALLERY_CHOICE),
+///     Ok(Value::Number(2))
+/// );
+/// ```
+pub fn gallery_provider() -> MemoryProvider {
+    let mut provider = MemoryProvider::new(vec![(HANDLE, gallery())]);
+    provider.set(GALLERY_TOGGLE, Value::Bool(true));
+    provider.set(GALLERY_CHOICE, Value::Number(2));
+    provider.set(GALLERY_NUMBER, Value::Number(4));
+    provider.set(GALLERY_SLIDER, Value::Number(5));
+    provider.set(GALLERY_TEXT, Value::Text(String::from("gallery")));
+    provider.set(GALLERY_PASSWORD, Value::Text(String::from("secret")));
+    provider.set(GALLERY_ORDER, Value::List(vec![2, 1]));
+    provider.set(GALLERY_SECOND, Value::Bool(true));
+    provider.set(GALLERY_DISABLED, Value::Bool(false));
+    provider.set(GALLERY_GUARD, Value::Number(3));
+    provider.set(GALLERY_BOOT, Value::Number(4));
+    provider
+}
+
+/// Returns the choice values of a list of labels, in order.
+fn gallery_choices(labels: &[&str]) -> Vec<Choice> {
+    labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| Choice::new(*label, u64::try_from(index).unwrap_or(u64::MAX)))
+        .collect()
 }
 
 /// Reads one value of the typed settings.
@@ -688,5 +955,25 @@ pub fn value_label(value: &Value) -> String {
         Value::Text(text) => text.clone(),
         Value::List(values) => format!("{values:?}"),
         Value::Bytes(bytes) => format!("{} bytes", bytes.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gallery;
+    use forms::controls::{BUILTIN_KINDS, kind_of};
+
+    #[test]
+    fn the_gallery_holds_every_builtin_kind() {
+        let set = gallery();
+        for kind in BUILTIN_KINDS {
+            assert!(
+                set.pages
+                    .iter()
+                    .flat_map(|page| page.rows.iter())
+                    .any(|row| kind_of(&row.control) == kind),
+                "the gallery has no row of kind {kind:?}"
+            );
+        }
     }
 }

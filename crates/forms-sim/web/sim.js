@@ -2,30 +2,38 @@
 //
 // The module exports these functions:
 //
-//   open(fixture) -> 1 when the page is ready
+//   open() -> 1 when the page is ready
 //   press(code, character) -> 1 when the page drew again
 //   pixels() -> pointer to the RGB pixels of the panel
 //   width(), height() -> the panel size in pixels
 //   text(), text_len() -> the last event text as UTF-8
 //
-// The key strokes are the codes of `forms_sim::demo::input`: 0 Up, 1 Down,
-// 2 Left, 3 Right, 4 Home, 5 Enter, 6 Back, 7 Erase and 8 for the character.
+// The key strokes are the codes of `forms_sim::demo::input`: 0 Volume Up,
+// 1 Volume Down, 2 Home, 3 Power, 4 Back, 5 Erase and 6 for the character.
+// The side buttons of the phone send the same codes.
+
+const UP = 0;
+const DOWN = 1;
+const HOME = 2;
+const SELECT = 3;
+const BACK = 4;
+const ERASE = 5;
+const CHARACTER = 6;
 
 const CODES = {
-  ArrowUp: 0,
-  ArrowDown: 1,
-  ArrowLeft: 2,
-  ArrowRight: 3,
-  Home: 4,
-  Enter: 5,
-  Escape: 6,
-  Backspace: 7,
+  ArrowUp: UP,
+  ArrowDown: DOWN,
+  Home: HOME,
+  Enter: SELECT,
+  ArrowLeft: BACK,
+  Escape: BACK,
+  Backspace: ERASE,
 };
 
 /**
  * Opens one page in `canvas` and binds the keyboard.
- * @param {{wasm: string, canvas: HTMLCanvasElement, notice: HTMLElement, fixture: number}} options
- * @returns {Promise<{redraw: function, open: function}>} the page
+ * @param {{wasm: string, canvas: HTMLCanvasElement, notice: HTMLElement}} options
+ * @returns {Promise<{redraw: function, open: function, press: function}>} the page
  */
 export async function start(options) {
   const { instance } = await WebAssembly.instantiateStreaming(fetch(options.wasm), {});
@@ -54,24 +62,34 @@ export async function start(options) {
     options.notice.textContent = new TextDecoder().decode(bytes);
   };
 
-  const open = (fixture) => {
-    ex.open(fixture);
+  // One path for the keyboard and the side buttons of the phone.
+  const send = (code, character = 0) => {
+    const drew = ex.press(code, character);
+    if (drew) {
+      blit();
+    }
+    return drew !== 0;
+  };
+
+  const open = () => {
+    ex.open();
     blit();
   };
 
   window.addEventListener("keydown", (event) => {
     const code = CODES[event.key];
-    const character = [...event.key].length === 1 ? event.key.codePointAt(0) : 0;
-    if (code === undefined && character < 32) {
+    const printable =
+      [...event.key].length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (code === undefined && !printable) {
       return;
     }
-    const drew = code === undefined ? ex.press(8, character) : ex.press(code, 0);
+    const drew =
+      code === undefined ? send(CHARACTER, event.key.codePointAt(0)) : send(code);
     if (drew) {
       event.preventDefault();
-      blit();
     }
   });
 
-  open(options.fixture ?? 0);
-  return { redraw: blit, open };
+  open();
+  return { redraw: blit, open, press: (code) => send(code) };
 }
